@@ -27,6 +27,7 @@ export interface MatchState {
   injuryTime: number
   halfDurationMinutes: number
   visible: boolean
+  matchInitiated: boolean
 }
 
 export const DEFAULT_STATE: MatchState = {
@@ -43,7 +44,8 @@ export const DEFAULT_STATE: MatchState = {
   status: 'PRE',
   injuryTime: 0,
   halfDurationMinutes: 20,
-  visible: true,
+  visible: false,
+  matchInitiated: false,
 }
 
 export const normalizeMatchState = (state: Partial<MatchState>): MatchState => ({

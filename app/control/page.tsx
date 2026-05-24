@@ -143,7 +143,10 @@ export default function ControlPage() {
 
   // Setup broadcast channel
   useEffect(() => {
-    if (!SUPABASE_CONFIGURED) return
+    if (!SUPABASE_CONFIGURED || !state.matchInitiated) {
+      connectedRef.current = false
+      return
+    }
 
     const ch = supabase.channel(CHANNEL_NAME)
     ch.subscribe((status) => {
@@ -154,9 +157,10 @@ export default function ControlPage() {
     channelRef.current = ch
     return () => {
       connectedRef.current = false
+      channelRef.current = null
       supabase.removeChannel(ch)
     }
-  }, [])
+  }, [state.matchInitiated])
 
   const updateState = useCallback((patch: Partial<MatchState>, broadcastEvent?: BroadcastEvent) => {
     setState(prev => {
@@ -280,11 +284,24 @@ export default function ControlPage() {
 
   const resetAll = () => {
     if (timerRef.current) clearInterval(timerRef.current)
-    const next: MatchState = { ...stateRef.current, homeScore: 0, awayScore: 0, timer: 0, timerRunning: false, injuryTime: 0 }
+    connectedRef.current = false
+    setConnected(false)
+    const next: MatchState = { ...stateRef.current, homeScore: 0, awayScore: 0, timer: 0, timerRunning: false, injuryTime: 0, matchInitiated: false, visible: false, status: 'PRE' }
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast('↺ MATCH RESET')
   }
+
+  const initiateMatch = () => {
+    if (stateRef.current.matchInitiated) return
+
+    const next: MatchState = { ...stateRef.current, matchInitiated: true, visible: true, status: stateRef.current.status || 'PRE' }
+    setState(next)
+    broadcast({ type: 'STATE_UPDATE', payload: next }, next)
+    showToast('● MATCH INITIATED')
+  }
+
+  const liveActive = state.matchInitiated && (!SUPABASE_CONFIGURED || connected)
 
   return (
     <>
@@ -342,12 +359,12 @@ export default function ControlPage() {
           {savingTimer && <span style={{ fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em' }}>SAVING…</span>}
           <div style={{
             width: 8, height: 8, borderRadius: '50%',
-            background: connected ? 'var(--green)' : 'var(--muted)',
-            boxShadow: connected ? '0 0 8px var(--green)' : 'none',
-            animation: connected ? 'pulse-dot 1.5s infinite' : 'none',
+            background: liveActive ? 'var(--green)' : 'var(--muted)',
+            boxShadow: liveActive ? '0 0 8px var(--green)' : 'none',
+            animation: liveActive ? 'pulse-dot 1.5s infinite' : 'none',
           }} />
-          <span style={{ fontSize: 12, color: connected ? 'var(--green)' : 'var(--muted)', letterSpacing: '0.08em', fontWeight: 600 }}>
-            {connected ? 'LIVE' : 'CONNECTING…'}
+          <span style={{ fontSize: 12, color: liveActive ? 'var(--green)' : 'var(--muted)', letterSpacing: '0.08em', fontWeight: 600 }}>
+            {state.matchInitiated ? (SUPABASE_CONFIGURED ? (connected ? 'LIVE' : 'CONNECTING…') : 'LOCAL LIVE') : 'STANDBY'}
           </span>
         </div>
       </header>
@@ -400,9 +417,12 @@ export default function ControlPage() {
         </div>
 
         {/* Visibility */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-          <Btn color="green" onClick={showOverlay}>▶ SHOW OVERLAY</Btn>
-          <Btn color="muted" onClick={hideOverlay}>■ HIDE OVERLAY</Btn>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+          <Btn color="brand" onClick={initiateMatch} disabled={state.matchInitiated}>
+            {state.matchInitiated ? '● MATCH LIVE' : '● INITIATE MATCH'}
+          </Btn>
+          <Btn color="green" onClick={showOverlay} disabled={!state.matchInitiated}>▶ SHOW OVERLAY</Btn>
+          <Btn color="muted" onClick={hideOverlay} disabled={!state.matchInitiated}>■ HIDE OVERLAY</Btn>
         </div>
 
         {/* Teams + Scores */}

@@ -5,12 +5,20 @@ import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KE
 
 export default function OverlayPage() {
   const [state, setState] = useState<MatchState>(DEFAULT_STATE)
-  const [visible, setVisible] = useState(true)
+  const [visible, setVisible] = useState(DEFAULT_STATE.visible)
   const [goalTeam, setGoalTeam] = useState<'home' | 'away' | null>(null)
-  const [animatingScore, setAnimatingScore] = useState<'home' | 'away' | null>(null)
+  const [scoreAnimationIds, setScoreAnimationIds] = useState({ home: 0, away: 0 })
   const [boardAnim, setBoardAnim] = useState<'enter' | 'exit' | 'idle'>('enter')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastUpdatedRef = useRef<string | null>(null)
+  const stateRef = useRef(state)
+  const hydratedRef = useRef(false)
+
+  const animateGoal = useCallback((team: 'home' | 'away') => {
+    setScoreAnimationIds(prev => ({ ...prev, [team]: prev[team] + 1 }))
+    setGoalTeam(team)
+    setTimeout(() => setGoalTeam(null), 1200)
+  }, [])
 
   const startLocalTimer = useCallback((from: number) => {
     if (timerRef.current) clearInterval(timerRef.current)
@@ -33,11 +41,20 @@ export default function OverlayPage() {
     }, 1000)
   }, [])
 
-  const applyState = useCallback((s: MatchState) => {
+  const applyState = useCallback((s: MatchState, animateScoreChanges = true) => {
     const next = clampTimerState(s)
+    const previous = stateRef.current
+    const shouldAnimateScores = animateScoreChanges && hydratedRef.current && next.matchInitiated
+    const homeGoal = shouldAnimateScores && next.homeScore > previous.homeScore
+    const awayGoal = shouldAnimateScores && next.awayScore > previous.awayScore
 
     setState(next)
-    setVisible(next.visible)
+    stateRef.current = next
+    hydratedRef.current = true
+    setVisible(next.matchInitiated && next.visible)
+
+    if (homeGoal) animateGoal('home')
+    if (awayGoal) animateGoal('away')
 
     if (timerRef.current) {
       clearInterval(timerRef.current)
@@ -45,28 +62,33 @@ export default function OverlayPage() {
     }
 
     if (next.timerRunning && next.timer < getTimerLimitSeconds(next)) startLocalTimer(next.timer)
-  }, [startLocalTimer])
+  }, [animateGoal, startLocalTimer])
 
   const applyEvent = useCallback((payload: BroadcastEvent, syncedState?: MatchState) => {
     if (payload.type === 'STATE_UPDATE') {
       applyState(payload.payload)
     } else if (payload.type === 'SCORE_GOAL') {
-      setState(prev => syncedState ? clampTimerState(syncedState) : { ...prev, [`${payload.team}Score`]: payload.newScore })
-      setAnimatingScore(payload.team)
-      setGoalTeam(payload.team)
-      setTimeout(() => setAnimatingScore(null), 600)
-      setTimeout(() => setGoalTeam(null), 1200)
+      if (syncedState) {
+        applyState(clampTimerState(syncedState), false)
+      } else {
+        setState(prev => {
+          const next = { ...prev, [`${payload.team}Score`]: payload.newScore }
+          stateRef.current = next
+          return next
+        })
+      }
+      animateGoal(payload.team)
     } else if (payload.type === 'SHOW') {
-      if (syncedState) setState(clampTimerState(syncedState))
+      if (syncedState) applyState(clampTimerState(syncedState), false)
       setVisible(true)
       setBoardAnim('enter')
       setTimeout(() => setBoardAnim('idle'), 600)
     } else if (payload.type === 'HIDE') {
-      if (syncedState) setState(clampTimerState(syncedState))
+      if (syncedState) applyState(clampTimerState(syncedState), false)
       setBoardAnim('exit')
       setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 500)
     }
-  }, [applyState])
+  }, [animateGoal, applyState])
 
   useEffect(() => {
     const load = async () => {
@@ -77,7 +99,7 @@ export default function OverlayPage() {
             const localData = await localResponse.json() as { state?: Partial<MatchState>; updatedAt?: number }
             if (localData.state) {
               lastUpdatedRef.current = String(localData.updatedAt ?? Date.now())
-              applyState(clampTimerState(localData.state))
+              applyState(clampTimerState(localData.state), false)
               return
             }
           }
@@ -95,14 +117,14 @@ export default function OverlayPage() {
         .single()
       if (data?.state) {
         lastUpdatedRef.current = data.updated_at
-        applyState(clampTimerState(data.state as Partial<MatchState>))
+        applyState(clampTimerState(data.state as Partial<MatchState>), false)
       }
     }
     load()
   }, [applyState])
 
   useEffect(() => {
-    if (!SUPABASE_CONFIGURED) return
+    if (!SUPABASE_CONFIGURED || !state.matchInitiated) return
 
     const channel = supabase.channel(CHANNEL_NAME)
     channel
@@ -123,7 +145,7 @@ export default function OverlayPage() {
       )
     channel.subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [applyEvent, applyState])
+  }, [applyEvent, applyState, state.matchInitiated])
 
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return
@@ -185,9 +207,9 @@ export default function OverlayPage() {
       }
     }
 
-    const poll = setInterval(syncFromDb, SUPABASE_CONFIGURED ? 10000 : 250)
+    const poll = setInterval(syncFromDb, state.matchInitiated ? (SUPABASE_CONFIGURED ? 10000 : 250) : 1000)
     return () => clearInterval(poll)
-  }, [applyState])
+  }, [applyState, state.matchInitiated])
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60)
@@ -228,30 +250,30 @@ export default function OverlayPage() {
           from { transform: translateX(0);     opacity: 1; }
           to   { transform: translateX(-110%); opacity: 0; }
         }
-        @keyframes score-flip {
-          0%   { transform: translateY(0)     scale(1);    color: #111; }
-          20%  { transform: translateY(-110%) scale(0.75); color: #1a56db; }
-          21%  { transform: translateY(110%)  scale(0.75); color: #1a56db; }
-          65%  { transform: translateY(0)     scale(1.35); color: #1a56db; }
-          100% { transform: translateY(0)     scale(1);    color: #111; }
+        @keyframes score-flash {
+          0%   { transform: translateY(0)     scale(1);   color: #111111; }
+          20%  { transform: translateY(-100%) scale(0.8); color: #EE2020; }
+          21%  { transform: translateY(100%)  scale(0.8); color: #EE2020; }
+          60%  { transform: translateY(0)     scale(1.3); color: #EE2020; }
+          100% { transform: translateY(0)     scale(1);   color: #111111; }
         }
         @keyframes goal-pulse {
           0%, 100% { opacity: 0; }
-          15%, 85%  { opacity: 1; }
-          50%       { opacity: 0.5; }
+          10%, 90%  { opacity: 1; }
+          50%       { opacity: 0.7; }
         }
 
         .anim-enter { animation: anim-enter 0.55s cubic-bezier(0.22,1,0.36,1) forwards; }
         .anim-exit  { animation: anim-exit  0.4s  ease-in                       forwards; }
 
-        .score-flip { animation: score-flip 0.55s cubic-bezier(0.34,1.56,0.64,1) forwards; }
+        .score-updating { animation: score-flash 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards; }
 
         .goal-flash {
           position: fixed;
           inset: 0;
           pointer-events: none;
-          background: rgba(26,86,219,0.15);
-          animation: goal-pulse 1.1s ease-in-out forwards;
+          background: rgba(238,32,32,0.15);
+          animation: goal-pulse 1s ease-in-out forwards;
         }
 
         /* ── scoreboard shell ── */
@@ -466,7 +488,7 @@ export default function OverlayPage() {
             <div className="scores">
               {(['home', 'away'] as const).map(team => (
                 <div key={team} className="score-cell">
-                  <span className={`score-val${animatingScore === team ? ' score-flip' : ''}`}>
+                  <span key={`${team}-${scoreAnimationIds[team]}`} className={`score-val${scoreAnimationIds[team] > 0 ? ' score-updating' : ''}`}>
                     {state[`${team}Score`]}
                   </span>
                 </div>
