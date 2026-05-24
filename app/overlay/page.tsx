@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 export default function OverlayPage() {
   const [state, setState] = useState<MatchState>(DEFAULT_STATE)
@@ -33,16 +33,16 @@ export default function OverlayPage() {
             clearInterval(timerRef.current)
             timerRef.current = null
           }
-          return { ...prev, timer: limit, timerRunning: false }
+          return { ...prev, timer: limit, timerRunning: false, timerStartedAt: null }
         }
 
-        return { ...prev, timer: t }
+        return { ...prev, timer: t, timerStartedAt: prev.timerRunning ? getCurrentTimestamp() : prev.timerStartedAt }
       })
     }, 1000)
   }, [])
 
   const applyState = useCallback((s: MatchState, animateScoreChanges = true) => {
-    const next = clampTimerState(s)
+    const next = resolveTimerState(s)
     const previous = stateRef.current
     const shouldAnimateScores = animateScoreChanges && hydratedRef.current && next.matchInitiated
     const homeGoal = shouldAnimateScores && next.homeScore > previous.homeScore
@@ -69,7 +69,7 @@ export default function OverlayPage() {
       applyState(payload.payload)
     } else if (payload.type === 'SCORE_GOAL') {
       if (syncedState) {
-        applyState(clampTimerState(syncedState), false)
+        applyState(resolveTimerState(syncedState), false)
       } else {
         setState(prev => {
           const next = { ...prev, [`${payload.team}Score`]: payload.newScore }
@@ -79,12 +79,12 @@ export default function OverlayPage() {
       }
       animateGoal(payload.team)
     } else if (payload.type === 'SHOW') {
-      if (syncedState) applyState(clampTimerState(syncedState), false)
+      if (syncedState) applyState(resolveTimerState(syncedState), false)
       setVisible(true)
       setBoardAnim('enter')
       setTimeout(() => setBoardAnim('idle'), 600)
     } else if (payload.type === 'HIDE') {
-      if (syncedState) applyState(clampTimerState(syncedState), false)
+      if (syncedState) applyState(resolveTimerState(syncedState), false)
       setBoardAnim('exit')
       setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 500)
     }
@@ -98,8 +98,8 @@ export default function OverlayPage() {
           if (localResponse.ok) {
             const localData = await localResponse.json() as { state?: Partial<MatchState>; updatedAt?: number }
             if (localData.state) {
-              lastUpdatedRef.current = String(localData.updatedAt ?? Date.now())
-              applyState(clampTimerState(localData.state), false)
+              lastUpdatedRef.current = String(localData.updatedAt ?? getCurrentTimestamp())
+              applyState(resolveTimerState(localData.state), false)
               return
             }
           }
@@ -117,7 +117,7 @@ export default function OverlayPage() {
         .single()
       if (data?.state) {
         lastUpdatedRef.current = data.updated_at
-        applyState(clampTimerState(data.state as Partial<MatchState>), false)
+        applyState(resolveTimerState(data.state as Partial<MatchState>), false)
       }
     }
     load()
@@ -139,7 +139,7 @@ export default function OverlayPage() {
 
           if (next?.state) {
             lastUpdatedRef.current = next.updated_at ?? null
-            applyState(clampTimerState(next.state))
+            applyState(resolveTimerState(next.state))
           }
         }
       )
@@ -152,7 +152,7 @@ export default function OverlayPage() {
 
     const localChannel = new BroadcastChannel(LOCAL_CHANNEL_KEY)
     localChannel.onmessage = ({ data }: MessageEvent<{ event: BroadcastEvent; state?: Partial<MatchState> }>) => {
-      applyEvent(data.event, data.state ? clampTimerState(data.state) : undefined)
+      applyEvent(data.event, data.state ? resolveTimerState(data.state) : undefined)
     }
 
     return () => localChannel.close()
@@ -164,7 +164,7 @@ export default function OverlayPage() {
 
       try {
         const message = JSON.parse(storageEvent.newValue) as { event: BroadcastEvent; state?: Partial<MatchState> }
-        applyEvent(message.event, message.state ? clampTimerState(message.state) : undefined)
+        applyEvent(message.event, message.state ? resolveTimerState(message.state) : undefined)
       } catch {
         // Ignore malformed local events from stale tabs or manual storage edits.
       }
@@ -185,7 +185,7 @@ export default function OverlayPage() {
 
             if (localData.state && updatedAt && updatedAt !== lastUpdatedRef.current) {
               lastUpdatedRef.current = updatedAt
-              applyState(clampTimerState(localData.state))
+              applyState(resolveTimerState(localData.state))
             }
           }
         } catch {
@@ -203,7 +203,7 @@ export default function OverlayPage() {
 
       if (data?.state && data.updated_at !== lastUpdatedRef.current) {
         lastUpdatedRef.current = data.updated_at
-        applyState(clampTimerState(data.state as Partial<MatchState>))
+        applyState(resolveTimerState(data.state as Partial<MatchState>))
       }
     }
 

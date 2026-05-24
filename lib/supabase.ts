@@ -23,6 +23,7 @@ export interface MatchState {
   awayScore: number
   timer: number
   timerRunning: boolean
+  timerStartedAt: number | null
   status: string
   injuryTime: number
   halfDurationMinutes: number
@@ -41,6 +42,7 @@ export const DEFAULT_STATE: MatchState = {
   awayScore: 0,
   timer: 0,
   timerRunning: false,
+  timerStartedAt: null,
   status: 'PRE',
   injuryTime: 0,
   halfDurationMinutes: 20,
@@ -65,10 +67,28 @@ export const clampTimerState = (state: Partial<MatchState>): MatchState => {
   const limit = getTimerLimitSeconds(next)
 
   if (next.timer >= limit) {
-    return { ...next, timer: limit, timerRunning: false }
+    return { ...next, timer: limit, timerRunning: false, timerStartedAt: null }
   }
 
   return next
+}
+
+export const getCurrentTimestamp = () => new Date().getTime()
+
+export const resolveTimerState = (state: Partial<MatchState>, now = getCurrentTimestamp()): MatchState => {
+  const next = clampTimerState(state)
+
+  if (!next.timerRunning || !next.timerStartedAt) return next
+
+  const elapsedSeconds = Math.max(0, Math.floor((now - next.timerStartedAt) / 1000))
+  const timer = next.timer + elapsedSeconds
+  const limit = getTimerLimitSeconds(next)
+
+  if (timer >= limit) {
+    return { ...next, timer: limit, timerRunning: false, timerStartedAt: null }
+  }
+
+  return { ...next, timer, timerStartedAt: now }
 }
 
 export type BroadcastEvent =

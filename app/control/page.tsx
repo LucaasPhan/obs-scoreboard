@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 const STATUSES = ['PRE', '1H', 'HT', '2H', 'ET', 'PEN', 'FT']
 
@@ -28,7 +28,7 @@ export default function ControlPage() {
     const channel = channelRef.current
 
     try {
-      const message = { event, state: s, sentAt: Date.now() }
+      const message = { event, state: s, sentAt: getCurrentTimestamp() }
       localChannelRef.current?.postMessage(message)
       localStorage.setItem(LOCAL_EVENT_KEY, JSON.stringify(message))
     } catch {
@@ -72,7 +72,7 @@ export default function ControlPage() {
         const limit = getTimerLimitSeconds(prev)
 
         if (t >= limit) {
-          const next = { ...prev, timer: limit, timerRunning: false }
+          const next = { ...prev, timer: limit, timerRunning: false, timerStartedAt: null }
           if (timerRef.current) {
             clearInterval(timerRef.current)
             timerRef.current = null
@@ -84,7 +84,7 @@ export default function ControlPage() {
           return next
         }
 
-        return { ...prev, timer: t }
+        return { ...prev, timer: t, timerStartedAt: prev.timerRunning ? getCurrentTimestamp() : prev.timerStartedAt }
       })
     }, 1000)
   }, [broadcast, showToast])
@@ -114,7 +114,7 @@ export default function ControlPage() {
           if (localResponse.ok) {
             const localData = await localResponse.json() as { state?: Partial<MatchState> }
             if (localData.state) {
-              const s = clampTimerState(localData.state)
+              const s = resolveTimerState(localData.state)
               setState(s)
               if (s.timerRunning) startLocalTimer(s.timer)
               return
@@ -133,7 +133,7 @@ export default function ControlPage() {
         .eq('id', 'singleton')
         .single()
       if (data?.state) {
-        const s = clampTimerState(data.state as Partial<MatchState>)
+        const s = resolveTimerState(data.state as Partial<MatchState>)
         setState(s)
         if (s.timerRunning) startLocalTimer(s.timer)
       }
@@ -190,19 +190,20 @@ export default function ControlPage() {
     if (stateRef.current.timerRunning) return
     if (stateRef.current.timer >= getTimerLimitSeconds(stateRef.current)) return
     startLocalTimer(stateRef.current.timer)
-    updateState({ timerRunning: true })
+    updateState({ timerRunning: true, timerStartedAt: getCurrentTimestamp() })
     showToast('▶ TIMER STARTED')
   }
 
   const timerPause = () => {
     if (timerRef.current) clearInterval(timerRef.current)
-    updateState({ timerRunning: false })
+    const next = resolveTimerState(stateRef.current)
+    updateState({ timer: next.timer, timerRunning: false, timerStartedAt: null })
     showToast('⏸ TIMER PAUSED')
   }
 
   const timerReset = () => {
     if (timerRef.current) clearInterval(timerRef.current)
-    updateState({ timer: 0, timerRunning: false })
+    updateState({ timer: 0, timerRunning: false, timerStartedAt: null })
     showToast('↺ TIMER RESET')
   }
 
@@ -211,9 +212,10 @@ export default function ControlPage() {
     const limit = getTimerLimitSeconds(stateRef.current)
     const timer = Math.min(secs, limit)
     const timerRunning = stateRef.current.timerRunning && timer < limit
-    setState(prev => ({ ...prev, timer, timerRunning }))
+    const timerStartedAt = timerRunning ? getCurrentTimestamp() : null
+    setState(prev => ({ ...prev, timer, timerRunning, timerStartedAt }))
     if (timerRunning) startLocalTimer(timer)
-    const next = { ...stateRef.current, timer, timerRunning }
+    const next = { ...stateRef.current, timer, timerRunning, timerStartedAt }
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast(`⏱ JUMPED TO ${Math.floor(timer / 60)}:00`)
   }
@@ -230,6 +232,7 @@ export default function ControlPage() {
       }
       next.timer = limit
       next.timerRunning = false
+      next.timerStartedAt = null
     }
 
     setState(next)
@@ -248,6 +251,7 @@ export default function ControlPage() {
       }
       next.timer = limit
       next.timerRunning = false
+      next.timerStartedAt = null
     }
 
     setState(next)
@@ -265,7 +269,8 @@ export default function ControlPage() {
     if (s === '1H' && !stateRef.current.timerRunning) timerStart()
     if (s === 'HT' || s === 'FT') {
       if (timerRef.current) clearInterval(timerRef.current)
-      updateState({ status: s, timerRunning: false })
+      const next = resolveTimerState(stateRef.current)
+      updateState({ status: s, timer: next.timer, timerRunning: false, timerStartedAt: null })
     }
     showToast(`STATUS → ${s}`)
   }
@@ -286,7 +291,7 @@ export default function ControlPage() {
     if (timerRef.current) clearInterval(timerRef.current)
     connectedRef.current = false
     setConnected(false)
-    const next: MatchState = { ...stateRef.current, homeScore: 0, awayScore: 0, timer: 0, timerRunning: false, injuryTime: 0, matchInitiated: false, visible: false, status: 'PRE' }
+    const next: MatchState = { ...stateRef.current, homeScore: 0, awayScore: 0, timer: 0, timerRunning: false, timerStartedAt: null, injuryTime: 0, matchInitiated: false, visible: false, status: 'PRE' }
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast('↺ MATCH RESET')
