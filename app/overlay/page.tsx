@@ -236,9 +236,9 @@ export default function OverlayPage() {
         }
 
         #overlay-root {
-          position: absolute;
+          position: fixed;
           inset: 0;
-          padding: 32px;
+          padding: 48px;
           pointer-events: none;
         }
 
@@ -280,15 +280,16 @@ export default function OverlayPage() {
         .board {
           display: flex;
           flex-direction: row;
-          height: 132px;
+          height: 90px;
           width: fit-content;
-          filter: drop-shadow(0 12px 34px rgba(0,0,0,0.72));
+          max-width: calc(100vw - 96px);
+          filter: drop-shadow(0 10px 26px rgba(0,0,0,0.7));
           white-space: nowrap;
         }
 
         /* brand stripe */
         .brand {
-          width: 88px;
+          width: 60px;
           flex-shrink: 0;
           display: flex;
           align-items: center;
@@ -296,14 +297,14 @@ export default function OverlayPage() {
           background: #1a56db;
           background-image: repeating-linear-gradient(
             -45deg,
-            transparent, transparent 10px,
-            rgba(255,255,255,0.06) 10px, rgba(255,255,255,0.06) 20px
+            transparent, transparent 7px,
+            rgba(255,255,255,0.06) 7px, rgba(255,255,255,0.06) 14px
           );
         }
 
         .brand svg {
-          width: 56px;
-          height: 56px;
+          width: 38px;
+          height: 38px;
         }
 
         /* teams panel */
@@ -311,22 +312,24 @@ export default function OverlayPage() {
           display: flex;
           flex-direction: column;
           background: #111827;
-          width: 368px;
+          width: 300px;
+          min-width: 0;
         }
 
         .team-row {
           display: flex;
           flex: 1;
           align-items: center;
-          padding: 0 18px 0 20px;
-          gap: 14px;
+          padding: 0 14px 0 16px;
+          gap: 10px;
           position: relative;
+          min-width: 0;
         }
         .team-row:first-child { border-bottom: 1px solid rgba(255,255,255,0.07); }
 
         .team-abbr {
-          width: 44px;
-          height: 44px;
+          width: 32px;
+          height: 32px;
           flex-shrink: 0;
           border-radius: 50%;
           display: flex;
@@ -334,23 +337,26 @@ export default function OverlayPage() {
           justify-content: center;
           font-family: 'Barlow Condensed', sans-serif;
           font-weight: 900;
-          font-size: 15px;
+          font-size: 11px;
           color: white;
         }
 
         .team-name {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 32px;
+          font-size: 23px;
           color: #ffffff;
           text-transform: uppercase;
           letter-spacing: 0.04em;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         .team-accent {
           position: absolute;
           right: 0; top: 0; bottom: 0;
-          width: 7px;
+          width: 5px;
         }
 
         /* scores panel */
@@ -358,7 +364,7 @@ export default function OverlayPage() {
           display: flex;
           flex-direction: column;
           background: #f5f5f5;
-          width: 92px;
+          width: 64px;
           flex-shrink: 0;
         }
 
@@ -374,7 +380,7 @@ export default function OverlayPage() {
         .score-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 62px;
+          font-size: 42px;
           color: #111;
           line-height: 1;
           display: block;
@@ -385,7 +391,7 @@ export default function OverlayPage() {
           display: flex;
           flex-direction: column;
           background: #111827;
-          width: 138px;
+          width: 104px;
           flex-shrink: 0;
         }
 
@@ -401,7 +407,7 @@ export default function OverlayPage() {
         .time-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 28px;
+          font-size: 21px;
           color: #fff;
           letter-spacing: 0.05em;
         }
@@ -409,9 +415,9 @@ export default function OverlayPage() {
         .injury-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 18px;
+          font-size: 13px;
           color: #1a56db;
-          margin-top: 3px;
+          margin-top: 2px;
         }
 
         .time-bottom {
@@ -424,27 +430,27 @@ export default function OverlayPage() {
         .status-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 22px;
+          font-size: 16px;
           color: rgba(255,255,255,0.45);
           letter-spacing: 0.06em;
         }
 
         @media (max-width: 900px), (max-height: 520px) {
-          #overlay-root { padding: 20px; }
-          .board { height: 92px; }
-          .brand { width: 64px; }
-          .brand svg { width: 40px; height: 40px; }
-          .teams { width: 260px; }
-          .team-row { padding: 0 12px 0 14px; gap: 10px; }
-          .team-abbr { width: 32px; height: 32px; font-size: 11px; }
-          .team-name { font-size: 22px; }
-          .team-accent { width: 5px; }
-          .scores { width: 66px; }
-          .score-val { font-size: 43px; }
-          .timeblock { width: 98px; }
-          .time-val { font-size: 20px; }
-          .injury-val { font-size: 13px; margin-top: 2px; }
-          .status-val { font-size: 15px; }
+          #overlay-root { padding: 24px; }
+          .board { height: 72px; max-width: calc(100vw - 48px); }
+          .brand { width: 48px; }
+          .brand svg { width: 30px; height: 30px; }
+          .teams { width: 232px; }
+          .team-row { padding: 0 10px 0 12px; gap: 8px; }
+          .team-abbr { width: 26px; height: 26px; font-size: 9px; }
+          .team-name { font-size: 18px; }
+          .team-accent { width: 4px; }
+          .scores { width: 52px; }
+          .score-val { font-size: 34px; }
+          .timeblock { width: 84px; }
+          .time-val { font-size: 17px; }
+          .injury-val { font-size: 11px; margin-top: 1px; }
+          .status-val { font-size: 13px; }
         }
       `}</style>
 
