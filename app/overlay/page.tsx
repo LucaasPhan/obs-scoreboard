@@ -6,7 +6,6 @@ import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KE
 export default function OverlayPage() {
   const [state, setState] = useState<MatchState>(DEFAULT_STATE)
   const [visible, setVisible] = useState(DEFAULT_STATE.visible)
-  const [goalTeam, setGoalTeam] = useState<'home' | 'away' | null>(null)
   const [scoreAnimationIds, setScoreAnimationIds] = useState({ home: 0, away: 0 })
   const [boardAnim, setBoardAnim] = useState<'enter' | 'exit' | 'idle'>('enter')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -16,8 +15,6 @@ export default function OverlayPage() {
 
   const animateGoal = useCallback((team: 'home' | 'away') => {
     setScoreAnimationIds(prev => ({ ...prev, [team]: prev[team] + 1 }))
-    setGoalTeam(team)
-    setTimeout(() => setGoalTeam(null), 1200)
   }, [])
 
   const startLocalTimer = useCallback((from: number) => {
@@ -257,24 +254,10 @@ export default function OverlayPage() {
           60%  { transform: translateY(0)     scale(1.3); color: #EE2020; }
           100% { transform: translateY(0)     scale(1);   color: #111111; }
         }
-        @keyframes goal-pulse {
-          0%, 100% { opacity: 0; }
-          10%, 90%  { opacity: 1; }
-          50%       { opacity: 0.7; }
-        }
-
         .anim-enter { animation: anim-enter 0.55s cubic-bezier(0.22,1,0.36,1) forwards; }
         .anim-exit  { animation: anim-exit  0.4s  ease-in                       forwards; }
 
         .score-updating { animation: score-flash 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards; }
-
-        .goal-flash {
-          position: fixed;
-          inset: 0;
-          pointer-events: none;
-          background: rgba(238,32,32,0.15);
-          animation: goal-pulse 1s ease-in-out forwards;
-        }
 
         /* ── scoreboard shell ── */
         .board {
@@ -453,8 +436,6 @@ export default function OverlayPage() {
           .status-val { font-size: 13px; }
         }
       `}</style>
-
-      {goalTeam && <div className="goal-flash" />}
 
       {visible && (
         <div id="overlay-root">
