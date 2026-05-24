@@ -423,7 +423,7 @@ export default function BasketballOverlayPage() {
       {visible && (
         <div id="basketball-overlay-root">
           <div className={`scorebug ${animClass}`}>
-            <div className="league-mark">NBA</div>
+            <div className="league-mark">VS</div>
 
             {(['away', 'home'] as const).map(team => (
               <div key={team} className="team-block" style={{ background: state[`${team}Color`] }}>
