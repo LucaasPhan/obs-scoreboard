@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_EVENT_KEY, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 export default function OverlayPage() {
   const [state, setState] = useState<MatchState>(DEFAULT_STATE)
@@ -70,6 +70,24 @@ export default function OverlayPage() {
 
   useEffect(() => {
     const load = async () => {
+      if (!SUPABASE_CONFIGURED) {
+        try {
+          const localResponse = await fetch(LOCAL_API_PATH, { cache: 'no-store' })
+          if (localResponse.ok) {
+            const localData = await localResponse.json() as { state?: Partial<MatchState>; updatedAt?: number }
+            if (localData.state) {
+              lastUpdatedRef.current = String(localData.updatedAt ?? Date.now())
+              applyState(clampTimerState(localData.state))
+              return
+            }
+          }
+        } catch {
+          // Local route can be unavailable during early dev-server startup.
+        }
+
+        return
+      }
+
       const { data } = await supabase
         .from('overlay_state')
         .select('state, updated_at')
@@ -84,12 +102,38 @@ export default function OverlayPage() {
   }, [applyState])
 
   useEffect(() => {
+    if (!SUPABASE_CONFIGURED) return
+
     const channel = supabase.channel(CHANNEL_NAME)
-    channel.on('broadcast', { event: 'event' }, ({ payload }: { payload: BroadcastEvent }) => {
-      applyEvent(payload)
-    })
+    channel
+      .on('broadcast', { event: 'event' }, ({ payload }: { payload: BroadcastEvent }) => {
+        applyEvent(payload)
+      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'overlay_state', filter: 'id=eq.singleton' },
+        (payload) => {
+          const next = payload.new as { state?: Partial<MatchState>; updated_at?: string } | null
+
+          if (next?.state) {
+            lastUpdatedRef.current = next.updated_at ?? null
+            applyState(clampTimerState(next.state))
+          }
+        }
+      )
     channel.subscribe()
     return () => { supabase.removeChannel(channel) }
+  }, [applyEvent, applyState])
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return
+
+    const localChannel = new BroadcastChannel(LOCAL_CHANNEL_KEY)
+    localChannel.onmessage = ({ data }: MessageEvent<{ event: BroadcastEvent; state?: Partial<MatchState> }>) => {
+      applyEvent(data.event, data.state ? clampTimerState(data.state) : undefined)
+    }
+
+    return () => localChannel.close()
   }, [applyEvent])
 
   useEffect(() => {
@@ -110,6 +154,25 @@ export default function OverlayPage() {
 
   useEffect(() => {
     const syncFromDb = async () => {
+      if (!SUPABASE_CONFIGURED) {
+        try {
+          const localResponse = await fetch(LOCAL_API_PATH, { cache: 'no-store' })
+          if (localResponse.ok) {
+            const localData = await localResponse.json() as { state?: Partial<MatchState>; updatedAt?: number }
+            const updatedAt = String(localData.updatedAt ?? '')
+
+            if (localData.state && updatedAt && updatedAt !== lastUpdatedRef.current) {
+              lastUpdatedRef.current = updatedAt
+              applyState(clampTimerState(localData.state))
+            }
+          }
+        } catch {
+          // Local route can be unavailable during early dev-server startup.
+        }
+
+        return
+      }
+
       const { data } = await supabase
         .from('overlay_state')
         .select('state, updated_at')
@@ -122,7 +185,7 @@ export default function OverlayPage() {
       }
     }
 
-    const poll = setInterval(syncFromDb, 1500)
+    const poll = setInterval(syncFromDb, SUPABASE_CONFIGURED ? 10000 : 250)
     return () => clearInterval(poll)
   }, [applyState])
 
@@ -146,12 +209,15 @@ export default function OverlayPage() {
           width: 100%;
           height: 100%;
           overflow: hidden;
+          text-rendering: geometricPrecision;
+          -webkit-font-smoothing: antialiased;
         }
 
         #overlay-root {
           position: absolute;
-          top: 20px;
-          left: 20px;
+          inset: 0;
+          padding: 32px;
+          pointer-events: none;
         }
 
         @keyframes anim-enter {
@@ -192,14 +258,15 @@ export default function OverlayPage() {
         .board {
           display: flex;
           flex-direction: row;
-          height: 76px;
-          filter: drop-shadow(0 6px 22px rgba(0,0,0,0.7));
+          height: 132px;
+          width: fit-content;
+          filter: drop-shadow(0 12px 34px rgba(0,0,0,0.72));
           white-space: nowrap;
         }
 
         /* brand stripe */
         .brand {
-          width: 50px;
+          width: 88px;
           flex-shrink: 0;
           display: flex;
           align-items: center;
@@ -207,9 +274,14 @@ export default function OverlayPage() {
           background: #1a56db;
           background-image: repeating-linear-gradient(
             -45deg,
-            transparent, transparent 6px,
-            rgba(255,255,255,0.06) 6px, rgba(255,255,255,0.06) 12px
+            transparent, transparent 10px,
+            rgba(255,255,255,0.06) 10px, rgba(255,255,255,0.06) 20px
           );
+        }
+
+        .brand svg {
+          width: 56px;
+          height: 56px;
         }
 
         /* teams panel */
@@ -217,22 +289,22 @@ export default function OverlayPage() {
           display: flex;
           flex-direction: column;
           background: #111827;
-          min-width: 192px;
+          width: 368px;
         }
 
         .team-row {
           display: flex;
           flex: 1;
           align-items: center;
-          padding: 0 10px 0 12px;
-          gap: 8px;
+          padding: 0 18px 0 20px;
+          gap: 14px;
           position: relative;
         }
         .team-row:first-child { border-bottom: 1px solid rgba(255,255,255,0.07); }
 
         .team-abbr {
-          width: 26px;
-          height: 26px;
+          width: 44px;
+          height: 44px;
           flex-shrink: 0;
           border-radius: 50%;
           display: flex;
@@ -240,14 +312,14 @@ export default function OverlayPage() {
           justify-content: center;
           font-family: 'Barlow Condensed', sans-serif;
           font-weight: 900;
-          font-size: 9px;
+          font-size: 15px;
           color: white;
         }
 
         .team-name {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 17px;
+          font-size: 32px;
           color: #ffffff;
           text-transform: uppercase;
           letter-spacing: 0.04em;
@@ -256,7 +328,7 @@ export default function OverlayPage() {
         .team-accent {
           position: absolute;
           right: 0; top: 0; bottom: 0;
-          width: 4px;
+          width: 7px;
         }
 
         /* scores panel */
@@ -264,7 +336,8 @@ export default function OverlayPage() {
           display: flex;
           flex-direction: column;
           background: #f5f5f5;
-          min-width: 52px;
+          width: 92px;
+          flex-shrink: 0;
         }
 
         .score-cell {
@@ -279,7 +352,7 @@ export default function OverlayPage() {
         .score-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 34px;
+          font-size: 62px;
           color: #111;
           line-height: 1;
           display: block;
@@ -290,7 +363,8 @@ export default function OverlayPage() {
           display: flex;
           flex-direction: column;
           background: #111827;
-          min-width: 74px;
+          width: 138px;
+          flex-shrink: 0;
         }
 
         .time-top {
@@ -305,7 +379,7 @@ export default function OverlayPage() {
         .time-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 15px;
+          font-size: 28px;
           color: #fff;
           letter-spacing: 0.05em;
         }
@@ -313,9 +387,9 @@ export default function OverlayPage() {
         .injury-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 11px;
+          font-size: 18px;
           color: #1a56db;
-          margin-top: 1px;
+          margin-top: 3px;
         }
 
         .time-bottom {
@@ -328,9 +402,27 @@ export default function OverlayPage() {
         .status-val {
           font-family: 'Oswald', sans-serif;
           font-weight: 700;
-          font-size: 12px;
+          font-size: 22px;
           color: rgba(255,255,255,0.45);
           letter-spacing: 0.06em;
+        }
+
+        @media (max-width: 900px), (max-height: 520px) {
+          #overlay-root { padding: 20px; }
+          .board { height: 92px; }
+          .brand { width: 64px; }
+          .brand svg { width: 40px; height: 40px; }
+          .teams { width: 260px; }
+          .team-row { padding: 0 12px 0 14px; gap: 10px; }
+          .team-abbr { width: 32px; height: 32px; font-size: 11px; }
+          .team-name { font-size: 22px; }
+          .team-accent { width: 5px; }
+          .scores { width: 66px; }
+          .score-val { font-size: 43px; }
+          .timeblock { width: 98px; }
+          .time-val { font-size: 20px; }
+          .injury-val { font-size: 13px; margin-top: 2px; }
+          .status-val { font-size: 15px; }
         }
       `}</style>
 

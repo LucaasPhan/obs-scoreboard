@@ -32,3 +32,17 @@ alter table overlay_state enable row level security;
 
 create policy "allow_all" on overlay_state
   for all using (true) with check (true);
+
+-- Enable websocket updates for the overlay_state row.
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'overlay_state'
+  ) then
+    alter publication supabase_realtime add table public.overlay_state;
+  end if;
+end $$;

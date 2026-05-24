@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_EVENT_KEY, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 const STATUSES = ['PRE', '1H', 'HT', '2H', 'ET', 'PEN', 'FT']
 
@@ -13,6 +13,7 @@ export default function ControlPage() {
   const [savingTimer, setSavingTimer] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
+  const localChannelRef = useRef<BroadcastChannel | null>(null)
   const connectedRef = useRef(false)
   const stateRef = useRef(state)
 
@@ -27,9 +28,11 @@ export default function ControlPage() {
     const channel = channelRef.current
 
     try {
-      localStorage.setItem(LOCAL_EVENT_KEY, JSON.stringify({ event, state: s, sentAt: Date.now() }))
+      const message = { event, state: s, sentAt: Date.now() }
+      localChannelRef.current?.postMessage(message)
+      localStorage.setItem(LOCAL_EVENT_KEY, JSON.stringify(message))
     } catch {
-      // Browser storage is only a local fast path; Supabase remains the source of truth.
+      // Browser local delivery is only a fast path; Supabase remains the source of truth.
     }
 
     if (channel && connectedRef.current) {
@@ -39,6 +42,18 @@ export default function ControlPage() {
         // The persisted state and local event keep the overlay in sync when realtime is unavailable.
       }
     }
+
+    try {
+      await fetch(LOCAL_API_PATH, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event, state: s }),
+      })
+    } catch {
+      // Local API sync is for dev and OBS localhost. Supabase can still persist when configured.
+    }
+
+    if (!SUPABASE_CONFIGURED) return
 
     try {
       setSavingTimer(true)
@@ -78,9 +93,40 @@ export default function ControlPage() {
     stateRef.current = state
   }, [state])
 
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return
+
+    const localChannel = new BroadcastChannel(LOCAL_CHANNEL_KEY)
+    localChannelRef.current = localChannel
+
+    return () => {
+      localChannelRef.current = null
+      localChannel.close()
+    }
+  }, [])
+
   // Load state on mount
   useEffect(() => {
     const load = async () => {
+      if (!SUPABASE_CONFIGURED) {
+        try {
+          const localResponse = await fetch(LOCAL_API_PATH, { cache: 'no-store' })
+          if (localResponse.ok) {
+            const localData = await localResponse.json() as { state?: Partial<MatchState> }
+            if (localData.state) {
+              const s = clampTimerState(localData.state)
+              setState(s)
+              if (s.timerRunning) startLocalTimer(s.timer)
+              return
+            }
+          }
+        } catch {
+          // Local route can be unavailable during early dev-server startup.
+        }
+
+        return
+      }
+
       const { data } = await supabase
         .from('overlay_state')
         .select('state')
@@ -97,6 +143,8 @@ export default function ControlPage() {
 
   // Setup broadcast channel
   useEffect(() => {
+    if (!SUPABASE_CONFIGURED) return
+
     const ch = supabase.channel(CHANNEL_NAME)
     ch.subscribe((status) => {
       const isSubscribed = status === 'SUBSCRIBED'
