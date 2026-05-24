@@ -13,6 +13,7 @@ export default function ControlPage() {
   const [savingTimer, setSavingTimer] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
+  const connectedRef = useRef(false)
   const stateRef = useRef(state)
   stateRef.current = state
 
@@ -38,10 +39,15 @@ export default function ControlPage() {
   useEffect(() => {
     const ch = supabase.channel(CHANNEL_NAME)
     ch.subscribe((status) => {
-      setConnected(status === 'SUBSCRIBED')
+      const isSubscribed = status === 'SUBSCRIBED'
+      connectedRef.current = isSubscribed
+      setConnected(isSubscribed)
     })
     channelRef.current = ch
-    return () => { supabase.removeChannel(ch) }
+    return () => {
+      connectedRef.current = false
+      supabase.removeChannel(ch)
+    }
   }, [])
 
   const startLocalTimer = useCallback((from: number) => {
@@ -61,11 +67,24 @@ export default function ControlPage() {
 
   const broadcast = useCallback(async (event: BroadcastEvent, newState?: MatchState) => {
     const s = newState ?? stateRef.current
-    await channelRef.current?.send({ type: 'broadcast', event: 'event', payload: event })
-    // Persist to DB
-    setSavingTimer(true)
-    await supabase.from('overlay_state').upsert({ id: 'singleton', state: s, updated_at: new Date().toISOString() })
-    setSavingTimer(false)
+    const channel = channelRef.current
+
+    try {
+      if (channel && connectedRef.current) {
+        await channel.send({ type: 'broadcast', event: 'event', payload: event })
+      } else {
+        await channel?.httpSend('event', event)
+      }
+    } catch (error) {
+      console.warn('Realtime broadcast failed; persisted state will still update.', error)
+    }
+
+    try {
+      setSavingTimer(true)
+      await supabase.from('overlay_state').upsert({ id: 'singleton', state: s, updated_at: new Date().toISOString() })
+    } finally {
+      setSavingTimer(false)
+    }
   }, [])
 
   const updateState = useCallback((patch: Partial<MatchState>, broadcastEvent?: BroadcastEvent) => {
@@ -161,7 +180,7 @@ export default function ControlPage() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Barlow+Condensed:wght@400;500;600&display=swap');
         :root {
-          --red: #EE2020; --dark: #0F0F1A; --panel: #181828;
+          --brand: #1a56db; --dark: #0F0F1A; --panel: #181828;
           --card: #1E1E30; --border: #2A2A42; --text: #E8E8F0;
           --muted: #7A7A9A; --green: #22C55E; --yellow: #F59E0B;
         }
@@ -180,7 +199,7 @@ export default function ControlPage() {
           font-family: 'Barlow Condensed', sans-serif; font-size: 15px;
           outline: none; transition: border-color 0.2s;
         }
-        input:focus { border-color: var(--red); }
+        input:focus { border-color: var(--brand); }
         input[type=color] {
           width: 36px; height: 36px; border: none; border-radius: 6px;
           cursor: pointer; padding: 2px; background: #11111F; flex-shrink: 0;
@@ -194,14 +213,15 @@ export default function ControlPage() {
         @keyframes toast-in  { from { transform: translateY(60px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @keyframes toast-out { from { transform: translateY(0); opacity: 1; } to { transform: translateY(60px); opacity: 0; } }
         @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-        @keyframes score-bounce { 0%,100% { transform: scale(1); } 50% { transform: scale(1.4); color: var(--red); } }
+        @keyframes score-bounce { 0%,100% { transform: scale(1); } 50% { transform: scale(1.4); color: var(--brand); } }
       `}</style>
 
       {/* Header */}
-      <header style={{ background: 'var(--panel)', borderBottom: '2px solid var(--red)', padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 14, position: 'sticky', top: 0, zIndex: 100 }}>
-        <div style={{ background: 'var(--red)', width: 38, height: 38, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <header style={{ background: 'var(--panel)', borderBottom: '2px solid var(--brand)', padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 14, position: 'sticky', top: 0, zIndex: 100 }}>
+        <div style={{ background: 'var(--brand)', width: 38, height: 38, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <svg viewBox="0 0 40 40" fill="none" width="24" height="24">
-            <path d="M8 28 L20 8 L28 8 L16 24 L30 24 L30 32 L22 32 L22 24 L8 28Z" fill="white"/>
+            <path d="M4 8 H11 L15 25 L22 8 H29 L18 32 H12 Z" fill="white"/>
+            <path d="M22 8 H36 V14 H27 L25 17 H36 V32 H21 V26 H30 L32 23 H21 V8 Z" fill="white"/>
           </svg>
         </div>
         <span className="oswald" style={{ fontSize: 20, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
@@ -232,36 +252,37 @@ export default function ControlPage() {
           minHeight: 110, position: 'relative'
         }}>
           <span style={{ position: 'absolute', top: 10, left: 14, fontSize: 10, letterSpacing: '0.15em', color: 'var(--muted)', fontWeight: 600 }}>LIVE PREVIEW</span>
-          <div style={{ display: 'flex', height: 58, borderRadius: 5, overflow: 'hidden', boxShadow: '0 6px 28px rgba(0,0,0,0.5)' }}>
-            <div style={{ width: 38, background: '#EE2020', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <svg viewBox="0 0 40 40" fill="none" width="20" height="20">
-                <path d="M8 28 L20 8 L28 8 L16 24 L30 24 L30 32 L22 32 L22 24 L8 28Z" fill="white"/>
+          <div style={{ display: 'flex', height: 64, borderRadius: 6, overflow: 'hidden', boxShadow: '0 6px 28px rgba(0,0,0,0.5)' }}>
+            <div style={{ width: 50, background: '#1a56db', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <svg viewBox="0 0 40 40" fill="none" width="24" height="24">
+                <path d="M4 8 H11 L15 25 L22 8 H29 L18 32 H12 Z" fill="white"/>
+                <path d="M22 8 H36 V14 H27 L25 17 H36 V32 H21 V26 H30 L32 23 H21 V8 Z" fill="white"/>
               </svg>
             </div>
-            <div style={{ background: '#1A1A2E', display: 'flex', flexDirection: 'column', minWidth: 140 }}>
+            <div style={{ background: '#111827', display: 'flex', flexDirection: 'column', width: 154 }}>
               {(['home', 'away'] as const).map((team, i) => (
-                <div key={team} style={{ flex: 1, display: 'flex', alignItems: 'center', padding: '0 8px', gap: 6, borderBottom: i === 0 ? '1px solid rgba(255,255,255,0.07)' : 'none' }}>
-                  <div style={{ width: 16, height: 16, borderRadius: '50%', background: state[`${team}Color`] + '55', border: `2px solid ${state[`${team}Color`]}99`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7, color: 'white', fontWeight: 900, flexShrink: 0 }}>
+                <div key={team} style={{ height: 32, display: 'flex', alignItems: 'center', padding: '0 10px', gap: 7, borderBottom: i === 0 ? '1px solid rgba(255,255,255,0.07)' : 'none', boxSizing: 'border-box' }}>
+                  <div style={{ width: 18, height: 18, borderRadius: '50%', background: state[`${team}Color`] + '55', border: `2px solid ${state[`${team}Color`]}99`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7, color: 'white', fontWeight: 900, flexShrink: 0, boxSizing: 'border-box' }}>
                     {state[`${team}Abbr`].slice(0, 2)}
                   </div>
-                  <span className="oswald" style={{ fontSize: 12, color: 'white', textTransform: 'uppercase' }}>{state[`${team}Name`].slice(0, 8)}</span>
+                  <span className="oswald" style={{ fontSize: 14, color: 'white', textTransform: 'uppercase', letterSpacing: '0.04em', lineHeight: 1 }}>{state[`${team}Name`].slice(0, 8)}</span>
                 </div>
               ))}
             </div>
-            <div style={{ background: '#F5F5F5', display: 'flex', flexDirection: 'column', minWidth: 38 }}>
+            <div style={{ background: '#F5F5F5', display: 'flex', flexDirection: 'column', width: 52, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,0.08)', borderRight: '1px solid rgba(0,0,0,0.08)', boxSizing: 'border-box' }}>
               {(['home', 'away'] as const).map((team, i) => (
-                <div key={team} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: i === 0 ? '1px solid #ddd' : 'none' }}>
-                  <span className="oswald" style={{ fontSize: 22, color: '#111', fontWeight: 700 }}>{state[`${team}Score`]}</span>
+                <div key={team} style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: i === 0 ? '1px solid #D7DCE3' : 'none', boxSizing: 'border-box' }}>
+                  <span className="oswald" style={{ fontSize: 25, color: '#0B0D12', fontWeight: 700, lineHeight: 1 }}>{state[`${team}Score`]}</span>
                 </div>
               ))}
             </div>
-            <div style={{ background: '#1A1A2E', display: 'flex', flexDirection: 'column', minWidth: 58 }}>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-                <span className="oswald" style={{ fontSize: 10, color: 'white' }}>{formatTime(state.timer)}</span>
-                {state.injuryTime > 0 && <span className="oswald" style={{ fontSize: 9, color: '#EE2020' }}>+{state.injuryTime}</span>}
+            <div style={{ background: '#111827', display: 'flex', flexDirection: 'column', width: 72, flexShrink: 0 }}>
+              <div style={{ height: 32, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid rgba(255,255,255,0.07)', boxSizing: 'border-box' }}>
+                <span className="oswald" style={{ fontSize: 13, color: 'white', lineHeight: 1 }}>{formatTime(state.timer)}</span>
+                {state.injuryTime > 0 && <span className="oswald" style={{ fontSize: 9, color: '#1a56db', lineHeight: 1, marginTop: 2 }}>+{state.injuryTime}</span>}
               </div>
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <span className="oswald" style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)' }}>{state.status}</span>
+              <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <span className="oswald" style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', lineHeight: 1, letterSpacing: '0.06em' }}>{state.status}</span>
               </div>
             </div>
           </div>
@@ -350,8 +371,8 @@ export default function ControlPage() {
               {STATUSES.map(s => (
                 <button key={s} onClick={() => setStatus(s)} style={{
                   border: '1px solid',
-                  borderColor: state.status === s ? 'var(--red)' : 'var(--border)',
-                  background: state.status === s ? 'var(--red)' : '#11111F',
+                  borderColor: state.status === s ? 'var(--brand)' : 'var(--border)',
+                  background: state.status === s ? 'var(--brand)' : '#11111F',
                   color: state.status === s ? 'white' : 'var(--muted)',
                   borderRadius: 5, padding: '7px 14px',
                   fontFamily: 'Oswald, sans-serif', fontSize: 13, fontWeight: 600,
@@ -365,7 +386,7 @@ export default function ControlPage() {
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4 }}>
               <Label>Quick Sets</Label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7, marginTop: 6 }}>
-                <Btn color="red" onClick={() => { timerJump(45); setStatus('HT') }}>SET HALF TIME</Btn>
+                <Btn color="brand" onClick={() => { timerJump(45); setStatus('HT') }}>SET HALF TIME</Btn>
                 <Btn color="muted" onClick={() => { timerJump(0); setStatus('2H') }}>2ND HALF START</Btn>
               </div>
             </div>
@@ -382,7 +403,7 @@ export default function ControlPage() {
         {/* OBS instructions */}
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px' }}>
           <div className="oswald" style={{ fontSize: 12, letterSpacing: '0.12em', color: 'var(--muted)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ width: 3, height: 14, background: 'var(--red)', borderRadius: 2, display: 'inline-block' }} />
+            <span style={{ width: 3, height: 14, background: 'var(--brand)', borderRadius: 2, display: 'inline-block' }} />
             OBS SETUP
           </div>
           <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>
@@ -418,7 +439,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   return (
     <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px' }}>
       <div style={{ fontFamily: 'Oswald, sans-serif', fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ width: 3, height: 14, background: 'var(--red)', borderRadius: 2, display: 'inline-block' }} />
+        <span style={{ width: 3, height: 14, background: 'var(--brand)', borderRadius: 2, display: 'inline-block' }} />
         {title}
       </div>
       {children}
@@ -443,9 +464,9 @@ function Label({ children, style }: { children: React.ReactNode; style?: React.C
   )
 }
 
-function Btn({ children, onClick, color, disabled }: { children: React.ReactNode; onClick: () => void; color: 'red' | 'green' | 'yellow' | 'muted'; disabled?: boolean }) {
-  const bg = color === 'red' ? '#EE2020' : color === 'green' ? '#22C55E' : color === 'yellow' ? '#F59E0B' : '#2A2A42'
-  const fg = color === 'muted' ? 'var(--text)' : color === 'red' ? 'white' : '#0a0a0a'
+function Btn({ children, onClick, color, disabled }: { children: React.ReactNode; onClick: () => void; color: 'brand' | 'green' | 'yellow' | 'muted'; disabled?: boolean }) {
+  const bg = color === 'brand' ? '#1a56db' : color === 'green' ? '#22C55E' : color === 'yellow' ? '#F59E0B' : '#2A2A42'
+  const fg = color === 'muted' ? 'var(--text)' : color === 'brand' ? 'white' : '#0a0a0a'
   return (
     <button onClick={onClick} disabled={disabled} style={{
       background: disabled ? '#1a1a2e' : bg, color: disabled ? 'var(--muted)' : fg,
@@ -464,7 +485,7 @@ function ScoreBtn({ onClick, sign, red }: { onClick: () => void; sign: string; r
   return (
     <button onClick={onClick} style={{
       width: 36, height: 36, borderRadius: 6, border: 'none', cursor: 'pointer',
-      background: red ? 'var(--red)' : 'var(--border)', color: 'white',
+      background: red ? 'var(--brand)' : 'var(--border)', color: 'white',
       fontSize: 20, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center',
       transition: 'transform 0.1s',
       fontFamily: 'Oswald, sans-serif',

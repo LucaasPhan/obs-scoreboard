@@ -13,7 +13,6 @@ export default function OverlayPage() {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  // Load persisted state on mount
   useEffect(() => {
     const load = async () => {
       const { data } = await supabase
@@ -29,7 +28,7 @@ export default function OverlayPage() {
       }
     }
     load()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const startLocalTimer = useCallback((from: number) => {
@@ -41,24 +40,16 @@ export default function OverlayPage() {
     }, 1000)
   }, [])
 
-  // Subscribe to broadcast
   useEffect(() => {
     const channel = supabase.channel(CHANNEL_NAME)
-
     channel.on('broadcast', { event: 'event' }, ({ payload }: { payload: BroadcastEvent }) => {
       if (payload.type === 'STATE_UPDATE') {
         const s = payload.payload
         setState(s)
-        if (s.timerRunning && !stateRef.current.timerRunning) {
-          startLocalTimer(s.timer)
-        } else if (!s.timerRunning) {
-          if (timerRef.current) clearInterval(timerRef.current)
-        }
+        if (s.timerRunning && !stateRef.current.timerRunning) startLocalTimer(s.timer)
+        else if (!s.timerRunning && timerRef.current) clearInterval(timerRef.current)
       } else if (payload.type === 'SCORE_GOAL') {
-        setState(prev => ({
-          ...prev,
-          [`${payload.team}Score`]: payload.newScore,
-        }))
+        setState(prev => ({ ...prev, [`${payload.team}Score`]: payload.newScore }))
         setAnimatingScore(payload.team)
         setGoalTeam(payload.team)
         setTimeout(() => setAnimatingScore(null), 600)
@@ -72,7 +63,6 @@ export default function OverlayPage() {
         setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 500)
       }
     })
-
     channel.subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [startLocalTimer])
@@ -83,131 +73,265 @@ export default function OverlayPage() {
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
 
-  const boardClass = boardAnim === 'enter'
-    ? 'animate-slide-in'
-    : boardAnim === 'exit'
-      ? 'animate-slide-out'
-      : ''
+  const animClass = boardAnim === 'enter' ? 'anim-enter' : boardAnim === 'exit' ? 'anim-exit' : ''
 
   return (
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@700&family=Barlow+Condensed:wght@400;700;900&display=swap');
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-        body {
+        html, body {
           background: transparent !important;
-          font-family: 'Barlow Condensed', sans-serif;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
         }
 
-        @keyframes slide-in {
-          from { transform: translateX(-120%); opacity: 0; }
+        #overlay-root {
+          position: absolute;
+          top: 20px;
+          left: 20px;
+        }
+
+        @keyframes anim-enter {
+          from { transform: translateX(-110%); opacity: 0; }
           to   { transform: translateX(0);     opacity: 1; }
         }
-        @keyframes slide-out {
+        @keyframes anim-exit {
           from { transform: translateX(0);     opacity: 1; }
-          to   { transform: translateX(-120%); opacity: 0; }
+          to   { transform: translateX(-110%); opacity: 0; }
         }
         @keyframes score-flip {
-          0%   { transform: translateY(0) scale(1);    color: #111; }
-          20%  { transform: translateY(-100%) scale(0.8); color: #EE2020; }
-          21%  { transform: translateY(100%)  scale(0.8); color: #EE2020; }
-          65%  { transform: translateY(0) scale(1.35); color: #EE2020; }
-          100% { transform: translateY(0) scale(1);    color: #111; }
+          0%   { transform: translateY(0)     scale(1);    color: #111; }
+          20%  { transform: translateY(-110%) scale(0.75); color: #1a56db; }
+          21%  { transform: translateY(110%)  scale(0.75); color: #1a56db; }
+          65%  { transform: translateY(0)     scale(1.35); color: #1a56db; }
+          100% { transform: translateY(0)     scale(1);    color: #111; }
         }
         @keyframes goal-pulse {
           0%, 100% { opacity: 0; }
           15%, 85%  { opacity: 1; }
-          50%       { opacity: 0.6; }
+          50%       { opacity: 0.5; }
         }
 
-        .animate-slide-in  { animation: slide-in  0.55s cubic-bezier(0.22,1,0.36,1) forwards; }
-        .animate-slide-out { animation: slide-out 0.4s ease-in forwards; }
-        .score-flip        { animation: score-flip 0.55s cubic-bezier(0.34,1.56,0.64,1) forwards; }
-        .goal-pulse        { animation: goal-pulse 1.1s ease-in-out forwards; }
+        .anim-enter { animation: anim-enter 0.55s cubic-bezier(0.22,1,0.36,1) forwards; }
+        .anim-exit  { animation: anim-exit  0.4s  ease-in                       forwards; }
 
-        .oswald { font-family: 'Oswald', sans-serif; font-weight: 700; }
-        .barlow { font-family: 'Barlow Condensed', sans-serif; }
+        .score-flip { animation: score-flip 0.55s cubic-bezier(0.34,1.56,0.64,1) forwards; }
+
+        .goal-flash {
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          background: rgba(26,86,219,0.15);
+          animation: goal-pulse 1.1s ease-in-out forwards;
+        }
+
+        /* ── scoreboard shell ── */
+        .board {
+          display: flex;
+          flex-direction: row;
+          height: 76px;
+          filter: drop-shadow(0 6px 22px rgba(0,0,0,0.7));
+          white-space: nowrap;
+        }
+
+        /* brand stripe */
+        .brand {
+          width: 50px;
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: #1a56db;
+          background-image: repeating-linear-gradient(
+            -45deg,
+            transparent, transparent 6px,
+            rgba(255,255,255,0.06) 6px, rgba(255,255,255,0.06) 12px
+          );
+        }
+
+        /* teams panel */
+        .teams {
+          display: flex;
+          flex-direction: column;
+          background: #111827;
+          min-width: 192px;
+        }
+
+        .team-row {
+          display: flex;
+          flex: 1;
+          align-items: center;
+          padding: 0 10px 0 12px;
+          gap: 8px;
+          position: relative;
+        }
+        .team-row:first-child { border-bottom: 1px solid rgba(255,255,255,0.07); }
+
+        .team-abbr {
+          width: 26px;
+          height: 26px;
+          flex-shrink: 0;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: 'Barlow Condensed', sans-serif;
+          font-weight: 900;
+          font-size: 9px;
+          color: white;
+        }
+
+        .team-name {
+          font-family: 'Oswald', sans-serif;
+          font-weight: 700;
+          font-size: 17px;
+          color: #ffffff;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+
+        .team-accent {
+          position: absolute;
+          right: 0; top: 0; bottom: 0;
+          width: 4px;
+        }
+
+        /* scores panel */
+        .scores {
+          display: flex;
+          flex-direction: column;
+          background: #f5f5f5;
+          min-width: 52px;
+        }
+
+        .score-cell {
+          display: flex;
+          flex: 1;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+        .score-cell:first-child { border-bottom: 1px solid #ddd; }
+
+        .score-val {
+          font-family: 'Oswald', sans-serif;
+          font-weight: 700;
+          font-size: 34px;
+          color: #111;
+          line-height: 1;
+          display: block;
+        }
+
+        /* time panel */
+        .timeblock {
+          display: flex;
+          flex-direction: column;
+          background: #111827;
+          min-width: 74px;
+        }
+
+        .time-top {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          align-items: center;
+          justify-content: center;
+          border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+
+        .time-val {
+          font-family: 'Oswald', sans-serif;
+          font-weight: 700;
+          font-size: 15px;
+          color: #fff;
+          letter-spacing: 0.05em;
+        }
+
+        .injury-val {
+          font-family: 'Oswald', sans-serif;
+          font-weight: 700;
+          font-size: 11px;
+          color: #1a56db;
+          margin-top: 1px;
+        }
+
+        .time-bottom {
+          display: flex;
+          flex: 1;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .status-val {
+          font-family: 'Oswald', sans-serif;
+          font-weight: 700;
+          font-size: 12px;
+          color: rgba(255,255,255,0.45);
+          letter-spacing: 0.06em;
+        }
       `}</style>
 
-      {/* Goal flash */}
-      {goalTeam && (
-        <div
-          className="goal-pulse fixed inset-0 pointer-events-none z-50"
-          style={{ background: 'rgba(238,32,32,0.18)' }}
-        />
-      )}
+      {goalTeam && <div className="goal-flash" />}
 
       {visible && (
-        <div className={`fixed top-5 left-5 ${boardClass}`} style={{ filter: 'drop-shadow(0 6px 20px rgba(0,0,0,0.65))' }}>
-          <div className="flex" style={{ height: 78 }}>
+        <div id="overlay-root">
+          <div className={`board ${animClass}`}>
 
-            {/* Brand stripe */}
-            <div className="flex items-center justify-center flex-shrink-0" style={{
-              width: 52, background: '#EE2020',
-              backgroundImage: 'repeating-linear-gradient(-45deg,transparent,transparent 6px,rgba(255,255,255,0.05) 6px,rgba(255,255,255,0.05) 12px)'
-            }}>
-              <svg viewBox="0 0 40 40" fill="none" width="30" height="30">
-                <path d="M8 28 L20 8 L28 8 L16 24 L30 24 L30 32 L22 32 L22 24 L8 28Z" fill="white"/>
+            {/* Brand */}
+            <div className="brand">
+              <svg viewBox="0 0 40 40" fill="none" width="28" height="28">
+                <rect x="2" y="2" width="36" height="36" rx="4" fill="rgba(255,255,255,0.1)"/>
+                <text x="5" y="30"
+                  fontFamily="'Arial Black','Helvetica Neue',sans-serif"
+                  fontWeight="900"
+                  fontStyle="italic"
+                  fontSize="22"
+                  letterSpacing="-1"
+                  fill="white">VS</text>
               </svg>
             </div>
 
             {/* Teams */}
-            <div className="flex flex-col" style={{ background: '#1A1A2E', minWidth: 190 }}>
-              {(['home', 'away'] as const).map((team, i) => (
-                <div key={team} className="flex items-center flex-1 gap-2 px-3 relative"
-                  style={{ borderBottom: i === 0 ? '1px solid rgba(255,255,255,0.07)' : 'none' }}>
-                  <div className="flex items-center justify-center flex-shrink-0 rounded-full text-white font-black"
-                    style={{
-                      width: 26, height: 26, fontSize: 9,
-                      background: state[`${team}Color`] + '55',
-                      border: `2px solid ${state[`${team}Color`]}99`,
-                      fontFamily: 'Barlow Condensed, sans-serif',
-                    }}>
+            <div className="teams">
+              {(['home', 'away'] as const).map(team => (
+                <div key={team} className="team-row">
+                  <div className="team-abbr" style={{
+                    background: state[`${team}Color`] + '44',
+                    border: `2px solid ${state[`${team}Color`]}88`,
+                  }}>
                     {state[`${team}Abbr`].slice(0, 3)}
                   </div>
-                  <span className="oswald text-white uppercase tracking-wide"
-                    style={{ fontSize: 17, letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
-                    {state[`${team}Name`]}
-                  </span>
-                  {/* color accent */}
-                  <div className="absolute right-0 top-0 bottom-0" style={{ width: 4, background: state[`${team}Color`] }} />
+                  <span className="team-name">{state[`${team}Name`]}</span>
+                  <div className="team-accent" style={{ background: state[`${team}Color`] }} />
                 </div>
               ))}
             </div>
 
             {/* Scores */}
-            <div className="flex flex-col" style={{ background: '#F5F5F5', minWidth: 52 }}>
-              {(['home', 'away'] as const).map((team, i) => (
-                <div key={team} className="flex items-center justify-center flex-1 overflow-hidden"
-                  style={{ borderBottom: i === 0 ? '1px solid #DDD' : 'none' }}>
-                  <span
-                    className={`oswald ${animatingScore === team ? 'score-flip' : ''}`}
-                    style={{ fontSize: 34, color: '#111', lineHeight: 1 }}>
+            <div className="scores">
+              {(['home', 'away'] as const).map(team => (
+                <div key={team} className="score-cell">
+                  <span className={`score-val${animatingScore === team ? ' score-flip' : ''}`}>
                     {state[`${team}Score`]}
                   </span>
                 </div>
               ))}
             </div>
 
-            {/* Time + Status */}
-            <div className="flex flex-col" style={{ background: '#1A1A2E', minWidth: 72 }}>
-              <div className="flex flex-col items-center justify-center flex-1"
-                style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-                <span className="oswald text-white" style={{ fontSize: 15, letterSpacing: '0.05em' }}>
-                  {formatTime(state.timer)}
-                </span>
+            {/* Time */}
+            <div className="timeblock">
+              <div className="time-top">
+                <span className="time-val">{formatTime(state.timer)}</span>
                 {state.injuryTime > 0 && (
-                  <span className="oswald" style={{ fontSize: 11, color: '#EE2020', marginTop: 1 }}>
-                    +{state.injuryTime}
-                  </span>
+                  <span className="injury-val">+{state.injuryTime}</span>
                 )}
               </div>
-              <div className="flex items-center justify-center flex-1">
-                <span className="oswald" style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', letterSpacing: '0.06em' }}>
-                  {state.status}
-                </span>
+              <div className="time-bottom">
+                <span className="status-val">{state.status}</span>
               </div>
             </div>
 
