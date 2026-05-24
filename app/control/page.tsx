@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_EVENT_KEY, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 const STATUSES = ['PRE', '1H', 'HT', '2H', 'ET', 'PEN', 'FT']
 
@@ -15,7 +15,68 @@ export default function ControlPage() {
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
   const connectedRef = useRef(false)
   const stateRef = useRef(state)
-  stateRef.current = state
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg)
+    setToastVisible(true)
+    setTimeout(() => setToastVisible(false), 2200)
+  }, [])
+
+  const broadcast = useCallback(async (event: BroadcastEvent, newState?: MatchState) => {
+    const s = newState ?? stateRef.current
+    const channel = channelRef.current
+
+    try {
+      localStorage.setItem(LOCAL_EVENT_KEY, JSON.stringify({ event, state: s, sentAt: Date.now() }))
+    } catch {
+      // Browser storage is only a local fast path; Supabase remains the source of truth.
+    }
+
+    if (channel && connectedRef.current) {
+      try {
+        await channel.send({ type: 'broadcast', event: 'event', payload: event })
+      } catch {
+        // The persisted state and local event keep the overlay in sync when realtime is unavailable.
+      }
+    }
+
+    try {
+      setSavingTimer(true)
+      await supabase.from('overlay_state').upsert({ id: 'singleton', state: s, updated_at: new Date().toISOString() })
+    } finally {
+      setSavingTimer(false)
+    }
+  }, [])
+
+  const startLocalTimer = useCallback((from: number) => {
+    if (timerRef.current) clearInterval(timerRef.current)
+    let t = from
+    timerRef.current = setInterval(() => {
+      t++
+      setState(prev => {
+        const limit = getTimerLimitSeconds(prev)
+
+        if (t >= limit) {
+          const next = { ...prev, timer: limit, timerRunning: false }
+          if (timerRef.current) {
+            clearInterval(timerRef.current)
+            timerRef.current = null
+          }
+          setTimeout(() => {
+            broadcast({ type: 'STATE_UPDATE', payload: next }, next)
+            showToast('⏱ TIMER COMPLETE')
+          }, 0)
+          return next
+        }
+
+        return { ...prev, timer: t }
+      })
+    }, 1000)
+  }, [broadcast, showToast])
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
   // Load state on mount
   useEffect(() => {
@@ -26,14 +87,13 @@ export default function ControlPage() {
         .eq('id', 'singleton')
         .single()
       if (data?.state) {
-        const s = data.state as MatchState
+        const s = clampTimerState(data.state as Partial<MatchState>)
         setState(s)
         if (s.timerRunning) startLocalTimer(s.timer)
       }
     }
     load()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [startLocalTimer])
 
   // Setup broadcast channel
   useEffect(() => {
@@ -47,43 +107,6 @@ export default function ControlPage() {
     return () => {
       connectedRef.current = false
       supabase.removeChannel(ch)
-    }
-  }, [])
-
-  const startLocalTimer = useCallback((from: number) => {
-    if (timerRef.current) clearInterval(timerRef.current)
-    let t = from
-    timerRef.current = setInterval(() => {
-      t++
-      setState(prev => ({ ...prev, timer: t }))
-    }, 1000)
-  }, [])
-
-  const showToast = (msg: string) => {
-    setToast(msg)
-    setToastVisible(true)
-    setTimeout(() => setToastVisible(false), 2200)
-  }
-
-  const broadcast = useCallback(async (event: BroadcastEvent, newState?: MatchState) => {
-    const s = newState ?? stateRef.current
-    const channel = channelRef.current
-
-    try {
-      if (channel && connectedRef.current) {
-        await channel.send({ type: 'broadcast', event: 'event', payload: event })
-      } else {
-        await channel?.httpSend('event', event)
-      }
-    } catch (error) {
-      console.warn('Realtime broadcast failed; persisted state will still update.', error)
-    }
-
-    try {
-      setSavingTimer(true)
-      await supabase.from('overlay_state').upsert({ id: 'singleton', state: s, updated_at: new Date().toISOString() })
-    } finally {
-      setSavingTimer(false)
     }
   }, [])
 
@@ -113,6 +136,7 @@ export default function ControlPage() {
   // Timer
   const timerStart = () => {
     if (stateRef.current.timerRunning) return
+    if (stateRef.current.timer >= getTimerLimitSeconds(stateRef.current)) return
     startLocalTimer(stateRef.current.timer)
     updateState({ timerRunning: true })
     showToast('▶ TIMER STARTED')
@@ -132,11 +156,50 @@ export default function ControlPage() {
 
   const timerJump = (mins: number) => {
     const secs = mins * 60
-    setState(prev => ({ ...prev, timer: secs }))
-    if (stateRef.current.timerRunning) startLocalTimer(secs)
-    const next = { ...stateRef.current, timer: secs }
+    const limit = getTimerLimitSeconds(stateRef.current)
+    const timer = Math.min(secs, limit)
+    const timerRunning = stateRef.current.timerRunning && timer < limit
+    setState(prev => ({ ...prev, timer, timerRunning }))
+    if (timerRunning) startLocalTimer(timer)
+    const next = { ...stateRef.current, timer, timerRunning }
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
-    showToast(`⏱ JUMPED TO ${mins}:00`)
+    showToast(`⏱ JUMPED TO ${Math.floor(timer / 60)}:00`)
+  }
+
+  const setHalfDuration = (value: number) => {
+    const halfDurationMinutes = Math.min(Math.max(value || 1, 1), 120)
+    const next: MatchState = { ...stateRef.current, halfDurationMinutes }
+    const limit = getTimerLimitSeconds(next)
+
+    if (next.timer >= limit) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+      next.timer = limit
+      next.timerRunning = false
+    }
+
+    setState(next)
+    broadcast({ type: 'STATE_UPDATE', payload: next }, next)
+  }
+
+  const setInjuryTime = (value: number) => {
+    const injuryTime = Math.min(Math.max(value || 0, 0), 45)
+    const next: MatchState = { ...stateRef.current, injuryTime }
+    const limit = getTimerLimitSeconds(next)
+
+    if (next.timer >= limit) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+      next.timer = limit
+      next.timerRunning = false
+    }
+
+    setState(next)
+    broadcast({ type: 'STATE_UPDATE', payload: next }, next)
   }
 
   const formatTime = (secs: number) => {
@@ -350,9 +413,15 @@ export default function ControlPage() {
               <Btn color="yellow" onClick={timerPause} disabled={!state.timerRunning}>⏸</Btn>
               <Btn color="muted" onClick={timerReset}>↺</Btn>
             </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <Label style={{ whiteSpace: 'nowrap', marginBottom: 0 }}>Half Duration</Label>
+              <input type="number" value={state.halfDurationMinutes} min={1} max={120} style={{ width: 72 }}
+                onChange={e => setHalfDuration(parseInt(e.target.value) || 1)} />
+              <span style={{ fontSize: 12, color: 'var(--muted)', letterSpacing: '0.06em' }}>MIN</span>
+            </div>
             <Label>Jump to (minutes)</Label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 7, marginTop: 4 }}>
-              <input type="number" id="jump-input" defaultValue={0} min={0} max={120} />
+              <input type="number" id="jump-input" defaultValue={0} min={0} max={state.halfDurationMinutes + state.injuryTime} />
               <Btn color="muted" onClick={() => {
                 const v = parseInt((document.getElementById('jump-input') as HTMLInputElement).value) || 0
                 timerJump(v)
@@ -360,8 +429,9 @@ export default function ControlPage() {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
               <Label style={{ whiteSpace: 'nowrap', marginBottom: 0 }}>Injury Time</Label>
-              <input type="number" value={state.injuryTime} min={0} max={20} style={{ width: 64 }}
-                onChange={e => updateState({ injuryTime: parseInt(e.target.value) || 0 })} />
+              <input type="number" value={state.injuryTime} min={0} max={45} style={{ width: 64 }}
+                onChange={e => setInjuryTime(parseInt(e.target.value) || 0)} />
+              <span style={{ fontSize: 12, color: 'var(--muted)', letterSpacing: '0.06em' }}>MIN</span>
             </div>
           </Card>
 
@@ -386,7 +456,7 @@ export default function ControlPage() {
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4 }}>
               <Label>Quick Sets</Label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7, marginTop: 6 }}>
-                <Btn color="brand" onClick={() => { timerJump(45); setStatus('HT') }}>SET HALF TIME</Btn>
+                <Btn color="brand" onClick={() => { timerJump(state.halfDurationMinutes + state.injuryTime); setStatus('HT') }}>SET HALF TIME</Btn>
                 <Btn color="muted" onClick={() => { timerJump(0); setStatus('2H') }}>2ND HALF START</Btn>
               </div>
             </div>
@@ -409,7 +479,7 @@ export default function ControlPage() {
           <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>
             In OBS: <strong style={{ color: 'var(--text)' }}>Add Source → Browser Source</strong> → paste your overlay URL →
             set width <strong style={{ color: 'var(--text)' }}>1920</strong> height <strong style={{ color: 'var(--text)' }}>1080</strong> →
-            tick <strong style={{ color: 'var(--text)' }}>"Shutdown source when not visible"</strong>.
+            tick <strong style={{ color: 'var(--text)' }}>&quot;Shutdown source when not visible&quot;</strong>.
             Background will be transparent automatically.
           </p>
         </div>

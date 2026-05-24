@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_EVENT_KEY, clampTimerState, getTimerLimitSeconds, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 export default function OverlayPage() {
   const [state, setState] = useState<MatchState>(DEFAULT_STATE)
@@ -10,62 +10,121 @@ export default function OverlayPage() {
   const [animatingScore, setAnimatingScore] = useState<'home' | 'away' | null>(null)
   const [boardAnim, setBoardAnim] = useState<'enter' | 'exit' | 'idle'>('enter')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const stateRef = useRef(state)
-  stateRef.current = state
-
-  useEffect(() => {
-    const load = async () => {
-      const { data } = await supabase
-        .from('overlay_state')
-        .select('state')
-        .eq('id', 'singleton')
-        .single()
-      if (data?.state) {
-        const s = data.state as MatchState
-        setState(s)
-        setVisible(s.visible)
-        if (s.timerRunning) startLocalTimer(s.timer)
-      }
-    }
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const lastUpdatedRef = useRef<string | null>(null)
 
   const startLocalTimer = useCallback((from: number) => {
     if (timerRef.current) clearInterval(timerRef.current)
     let t = from
     timerRef.current = setInterval(() => {
       t++
-      setState(prev => ({ ...prev, timer: t }))
+      setState(prev => {
+        const limit = getTimerLimitSeconds(prev)
+
+        if (t >= limit) {
+          if (timerRef.current) {
+            clearInterval(timerRef.current)
+            timerRef.current = null
+          }
+          return { ...prev, timer: limit, timerRunning: false }
+        }
+
+        return { ...prev, timer: t }
+      })
     }, 1000)
   }, [])
+
+  const applyState = useCallback((s: MatchState) => {
+    const next = clampTimerState(s)
+
+    setState(next)
+    setVisible(next.visible)
+
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+
+    if (next.timerRunning && next.timer < getTimerLimitSeconds(next)) startLocalTimer(next.timer)
+  }, [startLocalTimer])
+
+  const applyEvent = useCallback((payload: BroadcastEvent, syncedState?: MatchState) => {
+    if (payload.type === 'STATE_UPDATE') {
+      applyState(payload.payload)
+    } else if (payload.type === 'SCORE_GOAL') {
+      setState(prev => syncedState ? clampTimerState(syncedState) : { ...prev, [`${payload.team}Score`]: payload.newScore })
+      setAnimatingScore(payload.team)
+      setGoalTeam(payload.team)
+      setTimeout(() => setAnimatingScore(null), 600)
+      setTimeout(() => setGoalTeam(null), 1200)
+    } else if (payload.type === 'SHOW') {
+      if (syncedState) setState(clampTimerState(syncedState))
+      setVisible(true)
+      setBoardAnim('enter')
+      setTimeout(() => setBoardAnim('idle'), 600)
+    } else if (payload.type === 'HIDE') {
+      if (syncedState) setState(clampTimerState(syncedState))
+      setBoardAnim('exit')
+      setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 500)
+    }
+  }, [applyState])
+
+  useEffect(() => {
+    const load = async () => {
+      const { data } = await supabase
+        .from('overlay_state')
+        .select('state, updated_at')
+        .eq('id', 'singleton')
+        .single()
+      if (data?.state) {
+        lastUpdatedRef.current = data.updated_at
+        applyState(clampTimerState(data.state as Partial<MatchState>))
+      }
+    }
+    load()
+  }, [applyState])
 
   useEffect(() => {
     const channel = supabase.channel(CHANNEL_NAME)
     channel.on('broadcast', { event: 'event' }, ({ payload }: { payload: BroadcastEvent }) => {
-      if (payload.type === 'STATE_UPDATE') {
-        const s = payload.payload
-        setState(s)
-        if (s.timerRunning && !stateRef.current.timerRunning) startLocalTimer(s.timer)
-        else if (!s.timerRunning && timerRef.current) clearInterval(timerRef.current)
-      } else if (payload.type === 'SCORE_GOAL') {
-        setState(prev => ({ ...prev, [`${payload.team}Score`]: payload.newScore }))
-        setAnimatingScore(payload.team)
-        setGoalTeam(payload.team)
-        setTimeout(() => setAnimatingScore(null), 600)
-        setTimeout(() => setGoalTeam(null), 1200)
-      } else if (payload.type === 'SHOW') {
-        setVisible(true)
-        setBoardAnim('enter')
-        setTimeout(() => setBoardAnim('idle'), 600)
-      } else if (payload.type === 'HIDE') {
-        setBoardAnim('exit')
-        setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 500)
-      }
+      applyEvent(payload)
     })
     channel.subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [startLocalTimer])
+  }, [applyEvent])
+
+  useEffect(() => {
+    const onStorage = (storageEvent: StorageEvent) => {
+      if (storageEvent.key !== LOCAL_EVENT_KEY || !storageEvent.newValue) return
+
+      try {
+        const message = JSON.parse(storageEvent.newValue) as { event: BroadcastEvent; state?: Partial<MatchState> }
+        applyEvent(message.event, message.state ? clampTimerState(message.state) : undefined)
+      } catch {
+        // Ignore malformed local events from stale tabs or manual storage edits.
+      }
+    }
+
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [applyEvent])
+
+  useEffect(() => {
+    const syncFromDb = async () => {
+      const { data } = await supabase
+        .from('overlay_state')
+        .select('state, updated_at')
+        .eq('id', 'singleton')
+        .single()
+
+      if (data?.state && data.updated_at !== lastUpdatedRef.current) {
+        lastUpdatedRef.current = data.updated_at
+        applyState(clampTimerState(data.state as Partial<MatchState>))
+      }
+    }
+
+    const poll = setInterval(syncFromDb, 1500)
+    return () => clearInterval(poll)
+  }, [applyState])
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60)

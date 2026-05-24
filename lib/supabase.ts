@@ -7,6 +7,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 export const CHANNEL_NAME = 'laliga-overlay'
 export const STATE_KEY = 'match_state'
+export const LOCAL_EVENT_KEY = 'laliga-overlay-event'
 
 export interface MatchState {
   homeName: string
@@ -21,6 +22,7 @@ export interface MatchState {
   timerRunning: boolean
   status: string
   injuryTime: number
+  halfDurationMinutes: number
   visible: boolean
 }
 
@@ -37,7 +39,31 @@ export const DEFAULT_STATE: MatchState = {
   timerRunning: false,
   status: 'PRE',
   injuryTime: 0,
+  halfDurationMinutes: 20,
   visible: true,
+}
+
+export const normalizeMatchState = (state: Partial<MatchState>): MatchState => ({
+  ...DEFAULT_STATE,
+  ...state,
+  halfDurationMinutes: state.halfDurationMinutes ?? DEFAULT_STATE.halfDurationMinutes,
+})
+
+export const getTimerLimitSeconds = (state: MatchState) => {
+  const halfDurationSeconds = Math.max(1, state.halfDurationMinutes) * 60
+  const injurySeconds = Math.max(0, state.injuryTime) * 60
+  return halfDurationSeconds + injurySeconds
+}
+
+export const clampTimerState = (state: Partial<MatchState>): MatchState => {
+  const next = normalizeMatchState(state)
+  const limit = getTimerLimitSeconds(next)
+
+  if (next.timer >= limit) {
+    return { ...next, timer: limit, timerRunning: false }
+  }
+
+  return next
 }
 
 export type BroadcastEvent =

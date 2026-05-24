@@ -22,6 +22,7 @@ values ('singleton', '{
   "timerRunning": false,
   "status": "PRE",
   "injuryTime": 0,
+  "halfDurationMinutes": 20,
   "visible": true
 }'::jsonb)
 on conflict (id) do nothing;
