@@ -259,7 +259,7 @@ export default function BasketballControlPage() {
       clock: getPeriodLengthSeconds(stateRef.current),
       clockRunning: false,
       clockStartedAt: null,
-      shotClock: 24,
+      shotClock: 30,
       homeBonus: false,
       awayBonus: false,
     }
@@ -405,7 +405,7 @@ export default function BasketballControlPage() {
                 <input type="number" value={state.periodLengthMinutes} min={1} max={20} onChange={e => setPeriodLength(parseInt(e.target.value) || 1)} />
               </Field>
               <Field label="Shot clock">
-                <input type="number" value={state.shotClock} min={0} max={24} onChange={e => updateState({ shotClock: Math.min(Math.max(parseInt(e.target.value) || 0, 0), 24) })} />
+                <input type="number" value={state.shotClock} min={0} max={30} onChange={e => updateState({ shotClock: Math.min(Math.max(parseInt(e.target.value) || 0, 0), 24) })} />
               </Field>
             </div>
           </Card>

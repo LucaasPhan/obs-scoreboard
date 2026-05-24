@@ -48,7 +48,7 @@ export const DEFAULT_BASKETBALL_STATE: BasketballState = {
   clock: 12 * 60,
   clockRunning: false,
   clockStartedAt: null,
-  shotClock: 24,
+  shotClock: 30,
   possession: null,
   homeBonus: false,
   awayBonus: false,
