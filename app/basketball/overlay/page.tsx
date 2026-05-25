@@ -8,7 +8,6 @@ import {
   DEFAULT_BASKETBALL_STATE,
   basketballSupabase,
   getCurrentTimestamp,
-  getPeriodLengthSeconds,
   LOCAL_API_PATH,
   LOCAL_CHANNEL_KEY,
   resolveBasketballClock,
@@ -18,9 +17,7 @@ import {
 
 export default function BasketballOverlayPage() {
   const [state, setState] = useState<BasketballState>(DEFAULT_BASKETBALL_STATE)
-  const [visible, setVisible] = useState(DEFAULT_BASKETBALL_STATE.visible)
   const [scoreAnimationIds, setScoreAnimationIds] = useState({ home: 0, away: 0 })
-  const [boardAnim, setBoardAnim] = useState<'enter' | 'exit' | 'idle'>('enter')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const stateRef = useRef(state)
   const hydratedRef = useRef(false)
@@ -48,11 +45,12 @@ export default function BasketballOverlayPage() {
     }, 1000)
   }, [])
 
-  const applyState = useCallback((incoming: BasketballState, animateScoreChanges = true) => {
+  const applyState = useCallback((incoming: BasketballState, animateScoreChanges = true, force = false) => {
     const next = resolveBasketballClock(incoming)
     const previous = stateRef.current
 
     if (hydratedRef.current && next.syncVersion < previous.syncVersion) return
+    if (!force && hydratedRef.current && next.syncVersion === previous.syncVersion) return
 
     const canAnimate = animateScoreChanges && hydratedRef.current && next.gameInitiated
     const homeScored = canAnimate && next.homeScore > previous.homeScore
@@ -61,7 +59,6 @@ export default function BasketballOverlayPage() {
     setState(next)
     stateRef.current = next
     hydratedRef.current = true
-    setVisible(next.visible)
 
     if (homeScored) animateScore('home')
     if (awayScored) animateScore('away')
@@ -82,10 +79,10 @@ export default function BasketballOverlayPage() {
     if (event.type !== 'STATE_UPDATE' && hydratedRef.current && event.syncVersion && event.syncVersion < stateRef.current.syncVersion) return
 
     if (event.type === 'STATE_UPDATE') {
-      applyState(event.payload)
+      applyState(event.payload, true, true)
     } else if (event.type === 'SCORE') {
       if (syncedState) {
-        applyState(resolveBasketballClock(syncedState), false)
+        applyState(resolveBasketballClock(syncedState), false, true)
       } else {
         setState(prev => {
           const next = { ...prev, [`${event.team}Score`]: event.newScore, syncVersion: event.syncVersion ?? prev.syncVersion }
@@ -95,27 +92,16 @@ export default function BasketballOverlayPage() {
       }
       animateScore(event.team)
     } else if (event.type === 'SHOW') {
-      const wasVisible = stateRef.current.visible
-      if (syncedState) applyState(resolveBasketballClock(syncedState), false)
+      if (syncedState) applyState(resolveBasketballClock(syncedState), false, true)
       else {
         stateRef.current = { ...stateRef.current, visible: true, syncVersion: event.syncVersion ?? stateRef.current.syncVersion }
         setState(stateRef.current)
       }
-      if (!wasVisible) {
-        setVisible(true)
-        setBoardAnim('enter')
-        setTimeout(() => setBoardAnim('idle'), 450)
-      }
     } else if (event.type === 'HIDE') {
-      const wasVisible = stateRef.current.visible
-      if (syncedState) applyState(resolveBasketballClock(syncedState), false)
+      if (syncedState) applyState(resolveBasketballClock(syncedState), false, true)
       else {
         stateRef.current = { ...stateRef.current, visible: false, syncVersion: event.syncVersion ?? stateRef.current.syncVersion }
         setState(stateRef.current)
-      }
-      if (wasVisible) {
-        setBoardAnim('exit')
-        setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 350)
       }
     }
   }, [animateScore, applyState])
@@ -123,7 +109,7 @@ export default function BasketballOverlayPage() {
   // Initial load
   useEffect(() => {
     const load = async () => {
-      let dataState: any = null
+      let dataState: Partial<BasketballState> | null = null
 
       if (BASKETBALL_SUPABASE_CONFIGURED) {
         const { data } = await basketballSupabase
@@ -131,11 +117,11 @@ export default function BasketballOverlayPage() {
           .select('state')
           .eq('id', BASKETBALL_STATE_ID)
           .single()
-        if (data?.state) dataState = data.state
+        if (data?.state) dataState = data.state as Partial<BasketballState>
       } else {
         try {
           const res = await fetch(LOCAL_API_PATH)
-          const data = await res.json()
+          const data = await res.json() as { state?: Partial<BasketballState> | null }
           if (data?.state) dataState = data.state
         } catch {}
       }
@@ -194,8 +180,6 @@ export default function BasketballOverlayPage() {
   }
 
   const periodLabel = state.period > 4 ? `OT${state.period - 4}` : `${state.period}Q`
-  const animClass = boardAnim === 'enter' ? 'scorebug-enter' : boardAnim === 'exit' ? 'scorebug-exit' : ''
-
   return (
     <>
       <style>{`
@@ -384,41 +368,39 @@ export default function BasketballOverlayPage() {
         }
       `}</style>
 
-      {visible && (
-        <div id="basketball-overlay-root">
-          <div className={`scorebug ${animClass}`}>
-            <div className="league-mark">VS</div>
+      <div id="basketball-overlay-root">
+        <div className="scorebug">
+          <div className="league-mark">VS</div>
 
-            {(['away', 'home'] as const).map(team => (
-              <div key={team} className="team-block" style={{ background: state[`${team}Color`] }}>
-                <div className="team-meta">
-                  <div className="team-name">{state[`${team}Abbr`]} {state[`${team}Name`]}</div>
-                  <div className="team-flags">
-                    {state.possession === team && <span className="possession">●</span>}
-                    {state[`${team}Bonus`] && <span className="bonus">BONUS</span>}
-                  </div>
-                </div>
-                <div className="team-score">
-                  <span key={`${team}-${scoreAnimationIds[team]}`} className={scoreAnimationIds[team] > 0 ? 'score-pop' : ''}>
-                    {state[`${team}Score`]}
-                  </span>
+          {(['away', 'home'] as const).map(team => (
+            <div key={team} className="team-block" style={{ background: state[`${team}Color`] }}>
+              <div className="team-meta">
+                <div className="team-name">{state[`${team}Abbr`]} {state[`${team}Name`]}</div>
+                <div className="team-flags">
+                  {state.possession === team && <span className="possession">●</span>}
+                  {state[`${team}Bonus`] && <span className="bonus">BONUS</span>}
                 </div>
               </div>
-            ))}
+              <div className="team-score">
+                <span key={`${team}-${scoreAnimationIds[team]}`} className={scoreAnimationIds[team] > 0 ? 'score-pop' : ''}>
+                  {state[`${team}Score`]}
+                </span>
+              </div>
+            </div>
+          ))}
 
-            <div className="game-block">
-              <div className="clock-line">
-                <div className="clock">{formatClock(state.clock)}</div>
-                <div className="shot">0</div>
-              </div>
-              <div className="period-line">
-                <span>{periodLabel}</span>
-                <span>{state.clockRunning ? 'LIVE' : 'STOP'}</span>
-              </div>
+          <div className="game-block">
+            <div className="clock-line">
+              <div className="clock">{formatClock(state.clock)}</div>
+              <div className="shot">0</div>
+            </div>
+            <div className="period-line">
+              <span>{periodLabel}</span>
+              <span>{state.clockRunning ? 'LIVE' : 'STOP'}</span>
             </div>
           </div>
         </div>
-      )}
+      </div>
     </>
   )
 }

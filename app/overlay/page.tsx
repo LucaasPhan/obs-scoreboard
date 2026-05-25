@@ -170,7 +170,6 @@ export default function OverlayPage() {
   }
 
   const animClass = boardAnim === 'enter' ? 'anim-enter' : boardAnim === 'exit' ? 'anim-exit' : ''
-
   return (
     <>
       <style>{`
@@ -194,14 +193,6 @@ export default function OverlayPage() {
           pointer-events: none;
         }
 
-        @keyframes anim-enter {
-          from { transform: translateX(-110%); opacity: 0; }
-          to   { transform: translateX(0);     opacity: 1; }
-        }
-        @keyframes anim-exit {
-          from { transform: translateX(0);     opacity: 1; }
-          to   { transform: translateX(-110%); opacity: 0; }
-        }
         @keyframes score-flash {
           0%   { transform: translateY(0)     scale(1);   color: #111111; }
           20%  { transform: translateY(-100%) scale(0.8); color: #EE2020; }
@@ -209,7 +200,6 @@ export default function OverlayPage() {
           60%  { transform: translateY(0)     scale(1.3); color: #EE2020; }
           100% { transform: translateY(0)     scale(1);   color: #111111; }
         }
-        .anim-enter { animation: anim-enter 0.55s cubic-bezier(0.22,1,0.36,1) forwards; }
         .anim-exit  { animation: anim-exit  0.4s  ease-in                       forwards; }
 
         .score-updating { animation: score-flash 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards; }
@@ -424,35 +414,32 @@ export default function OverlayPage() {
                   <div className="team-accent" style={{ background: state[`${team}Color`] }} />
                 </div>
               ))}
+      <div id="overlay-root">
+        <div className={`board ${animClass}`}>
+          {/* HOME */}
+          <div className="team-block home" style={{ '--team-color': state.homeColor } as React.CSSProperties}>
+            <div className="team-info">
+              <span className="team-name">{state.homeAbbr}</span>
             </div>
+            <span className={`score-val ${homeAnim ? 'score-updating' : ''}`}>{state.homeScore}</span>
+          </div>
 
-            {/* Scores */}
-            <div className="scores">
-              {(['home', 'away'] as const).map(team => (
-                <div key={team} className="score-cell">
-                  <span key={`${team}-${scoreAnimationIds[team]}`} className={`score-val${scoreAnimationIds[team] > 0 ? ' score-updating' : ''}`}>
-                    {state[`${team}Score`]}
-                  </span>
-                </div>
-              ))}
+          {/* TIME */}
+          <div className="timeblock">
+            <span className="time-val">{formatTime(state.timer)}</span>
+            <span className="status-val">{state.status}</span>
+            {state.injuryTime > 0 && <span className="injury-time">+{state.injuryTime}</span>}
+          </div>
+
+          {/* AWAY */}
+          <div className="team-block away" style={{ '--team-color': state.awayColor } as React.CSSProperties}>
+            <span className={`score-val ${awayAnim ? 'score-updating' : ''}`}>{state.awayScore}</span>
+            <div className="team-info" style={{ alignItems: 'flex-end' }}>
+              <span className="team-name">{state.awayAbbr}</span>
             </div>
-
-            {/* Time */}
-            <div className="timeblock">
-              <div className="time-top">
-                <span className="time-val">{formatTime(state.timer)}</span>
-                {state.injuryTime > 0 && (
-                  <span className="injury-val">+{state.injuryTime}</span>
-                )}
-              </div>
-              <div className="time-bottom">
-                <span className="status-val">{state.status}</span>
-              </div>
-            </div>
-
           </div>
         </div>
-      )}
+      </div>
     </>
   )
 }
