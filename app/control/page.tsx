@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, SUPABASE_CONFIGURED, LOCAL_CHANNEL_KEY, LOCAL_API_PATH, STATE_KEY, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 const STATUSES = ['PRE', '1H', 'HT', '2H', 'ET', 'PEN', 'FT']
 
@@ -13,6 +13,7 @@ export default function ControlPage() {
   const [saving, setSaving] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
+  const localChannelRef = useRef<BroadcastChannel | null>(null)
   const connectedRef = useRef(false)
   const stateRef = useRef(state)
 
@@ -25,21 +26,35 @@ export default function ControlPage() {
   const broadcast = useCallback(async (event: BroadcastEvent, newState?: MatchState) => {
     const s = newState ?? stateRef.current
 
-    if (channelRef.current && connectedRef.current) {
-      try {
-        await channelRef.current.send({ type: 'broadcast', event: 'event', payload: event })
-      } catch {
-        // The persisted state keeps the overlay in sync when realtime is unavailable.
+    if (SUPABASE_CONFIGURED) {
+      if (channelRef.current && connectedRef.current) {
+        try {
+          await channelRef.current.send({ type: 'broadcast', event: 'event', payload: event })
+        } catch {
+          // The persisted state keeps the overlay in sync when realtime is unavailable.
+        }
       }
-    }
 
-    try {
-      setSaving(true)
-      await supabase.from('overlay_state').upsert({ id: 'singleton', state: s, updated_at: new Date().toISOString() })
-    } catch {
-      // Non-fatal; realtime broadcast already delivered the event.
-    } finally {
-      setSaving(false)
+      try {
+        setSaving(true)
+        await supabase.from('overlay_state').upsert({ id: 'singleton', state: s, updated_at: new Date().toISOString() })
+      } catch {
+        // Non-fatal; realtime broadcast already delivered the event.
+      } finally {
+        setSaving(false)
+      }
+    } else {
+      if (localChannelRef.current) {
+        localChannelRef.current.postMessage(event)
+      }
+      try {
+        localStorage.setItem(STATE_KEY, JSON.stringify(s))
+        await fetch(LOCAL_API_PATH, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(s),
+        })
+      } catch {}
     }
   }, [])
 
@@ -73,16 +88,27 @@ export default function ControlPage() {
     stateRef.current = state
   }, [state])
 
-  // Load initial state from Supabase
+  // Load initial state
   useEffect(() => {
     const load = async () => {
-      const { data } = await supabase
-        .from('overlay_state')
-        .select('state')
-        .eq('id', 'singleton')
-        .single()
-      if (data?.state) {
-        const s = resolveTimerState(data.state as Partial<MatchState>)
+      let dataState: any = null
+
+      if (SUPABASE_CONFIGURED) {
+        const { data } = await supabase
+          .from('overlay_state')
+          .select('state')
+          .eq('id', 'singleton')
+          .single()
+        if (data?.state) dataState = data.state
+      } else {
+        const local = localStorage.getItem(STATE_KEY)
+        if (local) {
+          try { dataState = JSON.parse(local) } catch {}
+        }
+      }
+
+      if (dataState) {
+        const s = resolveTimerState(dataState as Partial<MatchState>)
         stateRef.current = s
         setState(s)
         if (s.timerRunning) startLocalTimer(s.timer)
@@ -91,19 +117,29 @@ export default function ControlPage() {
     load()
   }, [startLocalTimer])
 
-  // Subscribe to Supabase Realtime channel
+  // Setup channels
   useEffect(() => {
-    const ch = supabase.channel(CHANNEL_NAME)
-    ch.subscribe((status) => {
-      const isSubscribed = status === 'SUBSCRIBED'
-      connectedRef.current = isSubscribed
-      setConnected(isSubscribed)
-    })
-    channelRef.current = ch
-    return () => {
-      connectedRef.current = false
-      channelRef.current = null
-      supabase.removeChannel(ch)
+    if (SUPABASE_CONFIGURED) {
+      const ch = supabase.channel(CHANNEL_NAME)
+      ch.subscribe((status) => {
+        const isSubscribed = status === 'SUBSCRIBED'
+        connectedRef.current = isSubscribed
+        setConnected(isSubscribed)
+      })
+      channelRef.current = ch
+      return () => {
+        connectedRef.current = false
+        channelRef.current = null
+        supabase.removeChannel(ch)
+      }
+    } else {
+      const bc = new BroadcastChannel(LOCAL_CHANNEL_KEY)
+      localChannelRef.current = bc
+      setConnected(true)
+      return () => {
+        bc.close()
+        localChannelRef.current = null
+      }
     }
   }, [])
 

@@ -4,9 +4,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BASKETBALL_CHANNEL_NAME,
   BASKETBALL_STATE_ID,
+  BASKETBALL_SUPABASE_CONFIGURED,
   DEFAULT_BASKETBALL_STATE,
   basketballSupabase,
   getCurrentTimestamp,
+  getPeriodLengthSeconds,
+  LOCAL_API_PATH,
+  LOCAL_CHANNEL_KEY,
   resolveBasketballClock,
   type BasketballEvent,
   type BasketballState,
@@ -57,7 +61,7 @@ export default function BasketballOverlayPage() {
     setState(next)
     stateRef.current = next
     hydratedRef.current = true
-    setVisible(next.gameInitiated && next.visible)
+    setVisible(next.visible)
 
     if (homeScored) animateScore('home')
     if (awayScored) animateScore('away')
@@ -116,42 +120,71 @@ export default function BasketballOverlayPage() {
     }
   }, [animateScore, applyState])
 
-  // Initial load from Supabase
+  // Initial load
   useEffect(() => {
     const load = async () => {
-      const { data } = await basketballSupabase
-        .from('overlay_state')
-        .select('state, updated_at')
-        .eq('id', BASKETBALL_STATE_ID)
-        .single()
+      let dataState: any = null
 
-      if (data?.state) {
-        applyState(resolveBasketballClock(data.state as Partial<BasketballState>), false)
+      if (BASKETBALL_SUPABASE_CONFIGURED) {
+        const { data } = await basketballSupabase
+          .from('overlay_state')
+          .select('state')
+          .eq('id', BASKETBALL_STATE_ID)
+          .single()
+        if (data?.state) dataState = data.state
+      } else {
+        try {
+          const res = await fetch(LOCAL_API_PATH)
+          const data = await res.json()
+          if (data?.state) dataState = data.state
+        } catch {}
+      }
+
+      if (dataState) {
+        const next = resolveBasketballClock(dataState as Partial<BasketballState>)
+        applyState(next, false)
       }
     }
     load()
   }, [applyState])
 
-  // Supabase Realtime: broadcast events + Postgres Changes
+  // Listen to channels
   useEffect(() => {
-    const channel = basketballSupabase.channel(BASKETBALL_CHANNEL_NAME)
-    channel
-      .on('broadcast', { event: 'event' }, ({ payload }: { payload: BasketballEvent }) => {
-        applyEvent(payload)
-      })
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'overlay_state', filter: `id=eq.${BASKETBALL_STATE_ID}` },
-        (payload) => {
-          const next = payload.new as { state?: Partial<BasketballState>; updated_at?: string } | null
-          if (next?.state) {
-            applyState(resolveBasketballClock(next.state))
+    if (BASKETBALL_SUPABASE_CONFIGURED) {
+      const channel = basketballSupabase.channel(BASKETBALL_CHANNEL_NAME)
+      channel
+        .on('broadcast', { event: 'event' }, ({ payload }: { payload: BasketballEvent }) => {
+          applyEvent(payload)
+        })
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'overlay_state', filter: `id=eq.${BASKETBALL_STATE_ID}` },
+          (payload) => {
+            const next = payload.new as { state?: Partial<BasketballState> } | null
+            if (next?.state) applyState(resolveBasketballClock(next.state))
           }
-        }
-      )
-    channel.subscribe()
+        )
+      channel.subscribe()
+      return () => { basketballSupabase.removeChannel(channel) }
+    } else {
+      const bc = new BroadcastChannel(LOCAL_CHANNEL_KEY)
+      bc.onmessage = (e) => applyEvent(e.data)
 
-    return () => { basketballSupabase.removeChannel(channel) }
+      const apiTimer = setInterval(async () => {
+        try {
+          const res = await fetch(LOCAL_API_PATH)
+          const data = await res.json()
+          if (data?.state) {
+            applyState(resolveBasketballClock(data.state), false)
+          }
+        } catch {}
+      }, 1000)
+
+      return () => {
+        bc.close()
+        clearInterval(apiTimer)
+      }
+    }
   }, [applyEvent, applyState])
 
   const formatClock = (secs: number) => {

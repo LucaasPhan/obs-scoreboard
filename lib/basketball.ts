@@ -4,9 +4,13 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? 'placeholder-anon-key'
 
 export const basketballSupabase = createClient(supabaseUrl, supabaseAnonKey)
+export const BASKETBALL_SUPABASE_CONFIGURED = supabaseUrl !== 'https://placeholder.supabase.co'
 
 export const BASKETBALL_CHANNEL_NAME = 'basketball-overlay'
 export const BASKETBALL_STATE_ID = 'basketball'
+export const LOCAL_EVENT_KEY = 'basketball-overlay-event'
+export const LOCAL_CHANNEL_KEY = 'basketball-overlay-channel'
+export const LOCAL_API_PATH = '/api/basketball-state'
 
 export interface BasketballState {
   homeName: string

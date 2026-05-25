@@ -4,10 +4,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BASKETBALL_CHANNEL_NAME,
   BASKETBALL_STATE_ID,
+  BASKETBALL_SUPABASE_CONFIGURED,
   DEFAULT_BASKETBALL_STATE,
   basketballSupabase,
   getCurrentTimestamp,
   getPeriodLengthSeconds,
+  LOCAL_API_PATH,
+  LOCAL_CHANNEL_KEY,
+  LOCAL_EVENT_KEY,
   resolveBasketballClock,
   type BasketballEvent,
   type BasketballState,
@@ -23,6 +27,7 @@ export default function BasketballControlPage() {
   const [saving, setSaving] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof basketballSupabase.channel> | null>(null)
+  const localChannelRef = useRef<BroadcastChannel | null>(null)
   const connectedRef = useRef(false)
   const stateRef = useRef(state)
   const nextSyncVersionRef = useRef(DEFAULT_BASKETBALL_STATE.syncVersion)
@@ -43,29 +48,39 @@ export default function BasketballControlPage() {
   const broadcast = useCallback(async (event: BasketballEvent, newState?: BasketballState) => {
     const s = newState ?? stateRef.current
 
-    if (channelRef.current && connectedRef.current) {
-      try {
-        await channelRef.current.send({ type: 'broadcast', event: 'event', payload: event })
-      } catch {
-        // The persisted row still keeps other clients synchronized.
-      }
-    }
-
-    persistenceQueueRef.current = persistenceQueueRef.current
-      .catch(() => undefined)
-      .then(async () => {
+    if (BASKETBALL_SUPABASE_CONFIGURED) {
+      if (channelRef.current && connectedRef.current) {
         try {
-          setSaving(true)
-          await basketballSupabase
-            .from('overlay_state')
-            .upsert({ id: BASKETBALL_STATE_ID, state: s, updated_at: new Date().toISOString() })
-        } catch {
-          // Persist failures are non-fatal; realtime broadcast already delivered the event.
-        }
-      })
-      .finally(() => setSaving(false))
+          await channelRef.current.send({ type: 'broadcast', event: 'event', payload: event })
+        } catch {}
+      }
 
-    await persistenceQueueRef.current
+      persistenceQueueRef.current = persistenceQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            setSaving(true)
+            await basketballSupabase
+              .from('overlay_state')
+              .upsert({ id: BASKETBALL_STATE_ID, state: s, updated_at: new Date().toISOString() })
+          } catch {} finally {
+            setSaving(false)
+          }
+        })
+      await persistenceQueueRef.current
+    } else {
+      if (localChannelRef.current) {
+        localChannelRef.current.postMessage(event)
+      }
+      try {
+        localStorage.setItem(LOCAL_EVENT_KEY, JSON.stringify(s))
+        await fetch(LOCAL_API_PATH, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(s),
+        })
+      } catch {}
+    }
   }, [])
 
   const startLocalClock = useCallback((from: number) => {
@@ -100,17 +115,27 @@ export default function BasketballControlPage() {
     stateRef.current = state
   }, [state])
 
-  // Load initial state from Supabase
+  // Load initial state
   useEffect(() => {
     const load = async () => {
-      const { data } = await basketballSupabase
-        .from('overlay_state')
-        .select('state')
-        .eq('id', BASKETBALL_STATE_ID)
-        .single()
+      let dataState: any = null
 
-      if (data?.state) {
-        const next = resolveBasketballClock(data.state as Partial<BasketballState>)
+      if (BASKETBALL_SUPABASE_CONFIGURED) {
+        const { data } = await basketballSupabase
+          .from('overlay_state')
+          .select('state')
+          .eq('id', BASKETBALL_STATE_ID)
+          .single()
+        if (data?.state) dataState = data.state
+      } else {
+        const local = localStorage.getItem(LOCAL_EVENT_KEY)
+        if (local) {
+          try { dataState = JSON.parse(local) } catch {}
+        }
+      }
+
+      if (dataState) {
+        const next = resolveBasketballClock(dataState as Partial<BasketballState>)
         nextSyncVersionRef.current = Math.max(nextSyncVersionRef.current, next.syncVersion)
         stateRef.current = next
         setState(next)
@@ -120,20 +145,30 @@ export default function BasketballControlPage() {
     load()
   }, [startLocalClock])
 
-  // Subscribe to Supabase Realtime channel
+  // Setup channels
   useEffect(() => {
-    const channel = basketballSupabase.channel(BASKETBALL_CHANNEL_NAME)
-    channel.subscribe(status => {
-      const isSubscribed = status === 'SUBSCRIBED'
-      connectedRef.current = isSubscribed
-      setConnected(isSubscribed)
-    })
-    channelRef.current = channel
+    if (BASKETBALL_SUPABASE_CONFIGURED) {
+      const channel = basketballSupabase.channel(BASKETBALL_CHANNEL_NAME)
+      channel.subscribe(status => {
+        const isSubscribed = status === 'SUBSCRIBED'
+        connectedRef.current = isSubscribed
+        setConnected(isSubscribed)
+      })
+      channelRef.current = channel
 
-    return () => {
-      connectedRef.current = false
-      channelRef.current = null
-      basketballSupabase.removeChannel(channel)
+      return () => {
+        connectedRef.current = false
+        channelRef.current = null
+        basketballSupabase.removeChannel(channel)
+      }
+    } else {
+      const bc = new BroadcastChannel(LOCAL_CHANNEL_KEY)
+      localChannelRef.current = bc
+      setConnected(true)
+      return () => {
+        bc.close()
+        localChannelRef.current = null
+      }
     }
   }, [])
 
