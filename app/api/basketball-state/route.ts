@@ -36,9 +36,18 @@ export async function GET() {
 export async function POST(request: Request) {
   const body = await request.json() as { event?: BasketballEvent; state?: Partial<BasketballState> }
   const current = getStore()
+  const nextState = clampBasketballState(body.state ?? current.state)
+
+  if (nextState.syncVersion < current.state.syncVersion) {
+    return Response.json(current, {
+      headers: {
+        'Cache-Control': 'no-store',
+      },
+    })
+  }
 
   current.event = body.event ?? null
-  current.state = clampBasketballState(body.state ?? current.state)
+  current.state = nextState
   current.updatedAt = Date.now()
 
   return Response.json(current, {

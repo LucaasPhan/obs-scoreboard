@@ -53,6 +53,9 @@ export default function BasketballOverlayPage() {
   const applyState = useCallback((incoming: BasketballState, animateScoreChanges = true) => {
     const next = resolveBasketballClock(incoming)
     const previous = stateRef.current
+
+    if (hydratedRef.current && next.syncVersion < previous.syncVersion) return
+
     const canAnimate = animateScoreChanges && hydratedRef.current && next.gameInitiated
     const homeScored = canAnimate && next.homeScore > previous.homeScore
     const awayScored = canAnimate && next.awayScore > previous.awayScore
@@ -74,6 +77,8 @@ export default function BasketballOverlayPage() {
   }, [animateScore, startLocalClock])
 
   const applyEvent = useCallback((event: BasketballEvent, syncedState?: BasketballState) => {
+    if (event.type !== 'STATE_UPDATE' && hydratedRef.current && event.syncVersion && event.syncVersion < stateRef.current.syncVersion) return
+
     if (event.type === 'STATE_UPDATE') {
       applyState(event.payload)
     } else if (event.type === 'SCORE') {
@@ -81,7 +86,7 @@ export default function BasketballOverlayPage() {
         applyState(resolveBasketballClock(syncedState), false)
       } else {
         setState(prev => {
-          const next = { ...prev, [`${event.team}Score`]: event.newScore }
+          const next = { ...prev, [`${event.team}Score`]: event.newScore, syncVersion: event.syncVersion ?? prev.syncVersion }
           stateRef.current = next
           return next
         })
@@ -89,11 +94,19 @@ export default function BasketballOverlayPage() {
       animateScore(event.team)
     } else if (event.type === 'SHOW') {
       if (syncedState) applyState(resolveBasketballClock(syncedState), false)
+      else {
+        stateRef.current = { ...stateRef.current, visible: true, syncVersion: event.syncVersion ?? stateRef.current.syncVersion }
+        setState(stateRef.current)
+      }
       setVisible(true)
       setBoardAnim('enter')
       setTimeout(() => setBoardAnim('idle'), 450)
     } else if (event.type === 'HIDE') {
       if (syncedState) applyState(resolveBasketballClock(syncedState), false)
+      else {
+        stateRef.current = { ...stateRef.current, visible: false, syncVersion: event.syncVersion ?? stateRef.current.syncVersion }
+        setState(stateRef.current)
+      }
       setBoardAnim('exit')
       setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 350)
     }
@@ -445,7 +458,7 @@ export default function BasketballOverlayPage() {
             <div className="game-block">
               <div className="clock-line">
                 <div className="clock">{formatClock(state.clock)}</div>
-                <div className="shot">{state.shotClock}</div>
+                <div className="shot">0</div>
               </div>
               <div className="period-line">
                 <span>{periodLabel}</span>

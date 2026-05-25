@@ -30,11 +30,19 @@ export default function BasketballControlPage() {
   const localChannelRef = useRef<BroadcastChannel | null>(null)
   const connectedRef = useRef(false)
   const stateRef = useRef(state)
+  const nextSyncVersionRef = useRef(DEFAULT_BASKETBALL_STATE.syncVersion)
+  const persistenceQueueRef = useRef(Promise.resolve())
 
   const showToast = useCallback((msg: string) => {
     setToast(msg)
     setToastVisible(true)
     setTimeout(() => setToastVisible(false), 2000)
+  }, [])
+
+  const stampState = useCallback((next: BasketballState): BasketballState => {
+    const syncVersion = Math.max(getCurrentTimestamp(), nextSyncVersionRef.current + 1)
+    nextSyncVersionRef.current = syncVersion
+    return { ...next, syncVersion }
   }, [])
 
   const broadcast = useCallback(async (event: BasketballEvent, newState?: BasketballState) => {
@@ -56,26 +64,33 @@ export default function BasketballControlPage() {
       }
     }
 
-    try {
-      await fetch(BASKETBALL_LOCAL_API_PATH, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event, state: s }),
+    persistenceQueueRef.current = persistenceQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          setSaving(true)
+          await fetch(BASKETBALL_LOCAL_API_PATH, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event, state: s }),
+          })
+        } catch {
+          // Local API may be unavailable in deployed serverless contexts.
+        }
+
+        if (!BASKETBALL_SUPABASE_CONFIGURED) return
+
+        try {
+          await basketballSupabase
+            .from('overlay_state')
+            .upsert({ id: BASKETBALL_STATE_ID, state: s, updated_at: new Date().toISOString() })
+        } catch {
+          // Local delivery still keeps same-machine overlays responsive.
+        }
       })
-    } catch {
-      // Local API may be unavailable in deployed serverless contexts.
-    }
+      .finally(() => setSaving(false))
 
-    if (!BASKETBALL_SUPABASE_CONFIGURED) return
-
-    try {
-      setSaving(true)
-      await basketballSupabase
-        .from('overlay_state')
-        .upsert({ id: BASKETBALL_STATE_ID, state: s, updated_at: new Date().toISOString() })
-    } finally {
-      setSaving(false)
-    }
+    await persistenceQueueRef.current
   }, [])
 
   const startLocalClock = useCallback((from: number) => {
@@ -86,7 +101,8 @@ export default function BasketballControlPage() {
       t--
       setState(prev => {
         if (t <= 0) {
-          const next = { ...prev, clock: 0, clockRunning: false, clockStartedAt: null }
+          const next = stampState({ ...prev, clock: 0, clockRunning: false, clockStartedAt: null })
+          stateRef.current = next
           if (timerRef.current) {
             clearInterval(timerRef.current)
             timerRef.current = null
@@ -98,10 +114,12 @@ export default function BasketballControlPage() {
           return next
         }
 
-        return { ...prev, clock: t, clockStartedAt: prev.clockRunning ? getCurrentTimestamp() : prev.clockStartedAt }
+        const next = { ...prev, clock: t, clockStartedAt: prev.clockRunning ? getCurrentTimestamp() : prev.clockStartedAt }
+        stateRef.current = next
+        return next
       })
     }, 1000)
-  }, [broadcast, showToast])
+  }, [broadcast, showToast, stampState])
 
   useEffect(() => {
     stateRef.current = state
@@ -128,6 +146,8 @@ export default function BasketballControlPage() {
             const data = await response.json() as { state?: Partial<BasketballState> }
             if (data.state) {
               const next = resolveBasketballClock(data.state)
+              nextSyncVersionRef.current = Math.max(nextSyncVersionRef.current, next.syncVersion)
+              stateRef.current = next
               setState(next)
               if (next.clockRunning) startLocalClock(next.clock)
               return
@@ -148,6 +168,8 @@ export default function BasketballControlPage() {
 
       if (data?.state) {
         const next = resolveBasketballClock(data.state as Partial<BasketballState>)
+        nextSyncVersionRef.current = Math.max(nextSyncVersionRef.current, next.syncVersion)
+        stateRef.current = next
         setState(next)
         if (next.clockRunning) startLocalClock(next.clock)
       }
@@ -179,16 +201,19 @@ export default function BasketballControlPage() {
 
   const updateState = useCallback((patch: Partial<BasketballState>, event?: BasketballEvent) => {
     setState(prev => {
-      const next = { ...prev, ...patch }
-      broadcast(event ?? { type: 'STATE_UPDATE', payload: next }, next)
+      const next = stampState({ ...prev, ...patch })
+      const nextEvent = event?.type === 'SHOW' || event?.type === 'HIDE' ? { ...event, syncVersion: next.syncVersion } : event
+      stateRef.current = next
+      broadcast(nextEvent ?? { type: 'STATE_UPDATE', payload: next }, next)
       return next
     })
-  }, [broadcast])
+  }, [broadcast, stampState])
 
   const initiateGame = () => {
     if (stateRef.current.gameInitiated) return
 
-    const next = { ...stateRef.current, gameInitiated: true, visible: true }
+    const next = stampState({ ...stateRef.current, gameInitiated: true, visible: true })
+    stateRef.current = next
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast('GAME INITIATED')
@@ -197,9 +222,10 @@ export default function BasketballControlPage() {
   const adjustScore = (team: 'home' | 'away', points: number) => {
     const key = `${team}Score` as 'homeScore' | 'awayScore'
     const newScore = Math.max(0, stateRef.current[key] + points)
-    const next = { ...stateRef.current, [key]: newScore }
+    const next = stampState({ ...stateRef.current, [key]: newScore })
+    stateRef.current = next
     setState(next)
-    broadcast(points > 0 ? { type: 'SCORE', team, points, newScore } : { type: 'STATE_UPDATE', payload: next }, next)
+    broadcast(points > 0 ? { type: 'SCORE', team, points, newScore, syncVersion: next.syncVersion } : { type: 'STATE_UPDATE', payload: next }, next)
     showToast(points > 0 ? `${stateRef.current[`${team}Abbr`]} +${points}` : `${stateRef.current[`${team}Abbr`]} SCORE DOWN`)
   }
 
@@ -207,7 +233,8 @@ export default function BasketballControlPage() {
     const current = resolveBasketballClock(stateRef.current)
     if (current.clockRunning || current.clock <= 0) return
 
-    const next = { ...current, clockRunning: true, clockStartedAt: getCurrentTimestamp() }
+    const next = stampState({ ...current, clockRunning: true, clockStartedAt: getCurrentTimestamp() })
+    stateRef.current = next
     setState(next)
     startLocalClock(next.clock)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
@@ -223,13 +250,14 @@ export default function BasketballControlPage() {
 
   const clockReset = () => {
     if (timerRef.current) clearInterval(timerRef.current)
-    updateState({ clock: getPeriodLengthSeconds(stateRef.current), clockRunning: false, clockStartedAt: null, shotClock: 24 })
+    updateState({ clock: getPeriodLengthSeconds(stateRef.current), clockRunning: false, clockStartedAt: null, shotClock: 0 })
     showToast('CLOCK RESET')
   }
 
   const setClockMinutes = (minutes: number) => {
     const clock = Math.min(Math.max(0, minutes), stateRef.current.periodLengthMinutes) * 60
-    const next = { ...stateRef.current, clock, clockRunning: false, clockStartedAt: null }
+    const next = stampState({ ...stateRef.current, clock, clockRunning: false, clockStartedAt: null })
+    stateRef.current = next
     if (timerRef.current) clearInterval(timerRef.current)
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
@@ -238,13 +266,14 @@ export default function BasketballControlPage() {
   const setPeriodLength = (minutes: number) => {
     const periodLengthMinutes = Math.min(Math.max(minutes || 1, 1), 20)
     const limit = periodLengthMinutes * 60
-    const next = {
+    const next = stampState({
       ...stateRef.current,
       periodLengthMinutes,
       clock: Math.min(stateRef.current.clock, limit),
       clockRunning: false,
       clockStartedAt: null,
-    }
+    })
+    stateRef.current = next
     if (timerRef.current) clearInterval(timerRef.current)
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
@@ -253,16 +282,17 @@ export default function BasketballControlPage() {
   const nextPeriod = () => {
     if (timerRef.current) clearInterval(timerRef.current)
     const period = Math.min(stateRef.current.period + 1, 6)
-    const next = {
+    const next = stampState({
       ...stateRef.current,
       period,
       clock: getPeriodLengthSeconds(stateRef.current),
       clockRunning: false,
       clockStartedAt: null,
-      shotClock: 30,
+      shotClock: 0,
       homeBonus: false,
       awayBonus: false,
-    }
+    })
+    stateRef.current = next
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast(`PERIOD ${period}`)
@@ -272,7 +302,8 @@ export default function BasketballControlPage() {
     if (timerRef.current) clearInterval(timerRef.current)
     connectedRef.current = false
     setConnected(false)
-    const next = { ...DEFAULT_BASKETBALL_STATE, periodLengthMinutes: stateRef.current.periodLengthMinutes }
+    const next = stampState({ ...DEFAULT_BASKETBALL_STATE, periodLengthMinutes: stateRef.current.periodLengthMinutes })
+    stateRef.current = next
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast('GAME RESET')
@@ -400,12 +431,9 @@ export default function BasketballControlPage() {
                 setClockMinutes(parseInt(input?.value ?? '0') || 0)
               }}>SET</Btn>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 10 }}>
+            <div style={{ marginTop: 10 }}>
               <Field label="Period length">
                 <input type="number" value={state.periodLengthMinutes} min={1} max={20} onChange={e => setPeriodLength(parseInt(e.target.value) || 1)} />
-              </Field>
-              <Field label="Shot clock">
-                <input type="number" value={state.shotClock} min={0} max={30} onChange={e => updateState({ shotClock: Math.min(Math.max(parseInt(e.target.value) || 0, 0), 24) })} />
               </Field>
             </div>
           </Card>

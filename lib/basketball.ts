@@ -32,6 +32,7 @@ export interface BasketballState {
   awayBonus: boolean
   visible: boolean
   gameInitiated: boolean
+  syncVersion: number
 }
 
 export const DEFAULT_BASKETBALL_STATE: BasketballState = {
@@ -48,19 +49,20 @@ export const DEFAULT_BASKETBALL_STATE: BasketballState = {
   clock: 12 * 60,
   clockRunning: false,
   clockStartedAt: null,
-  shotClock: 30,
+  shotClock: 0,
   possession: null,
   homeBonus: false,
   awayBonus: false,
   visible: false,
   gameInitiated: false,
+  syncVersion: 0,
 }
 
 export type BasketballEvent =
   | { type: 'STATE_UPDATE'; payload: BasketballState }
-  | { type: 'SCORE'; team: 'home' | 'away'; points: number; newScore: number }
-  | { type: 'SHOW' }
-  | { type: 'HIDE' }
+  | { type: 'SCORE'; team: 'home' | 'away'; points: number; newScore: number; syncVersion?: number }
+  | { type: 'SHOW'; syncVersion?: number }
+  | { type: 'HIDE'; syncVersion?: number }
 
 export const getCurrentTimestamp = () => new Date().getTime()
 
@@ -71,6 +73,7 @@ export const normalizeBasketballState = (state: Partial<BasketballState>): Baske
   ...DEFAULT_BASKETBALL_STATE,
   ...state,
   periodLengthMinutes: state.periodLengthMinutes ?? DEFAULT_BASKETBALL_STATE.periodLengthMinutes,
+  syncVersion: state.syncVersion ?? DEFAULT_BASKETBALL_STATE.syncVersion,
   clock: state.clock ?? getPeriodLengthSeconds({
     periodLengthMinutes: state.periodLengthMinutes ?? DEFAULT_BASKETBALL_STATE.periodLengthMinutes,
   }),
