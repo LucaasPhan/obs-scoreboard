@@ -122,11 +122,6 @@ export default function BasketballControlPage() {
 
   // Subscribe to Supabase Realtime channel
   useEffect(() => {
-    if (!state.gameInitiated) {
-      connectedRef.current = false
-      return
-    }
-
     const channel = basketballSupabase.channel(BASKETBALL_CHANNEL_NAME)
     channel.subscribe(status => {
       const isSubscribed = status === 'SUBSCRIBED'
@@ -140,7 +135,7 @@ export default function BasketballControlPage() {
       channelRef.current = null
       basketballSupabase.removeChannel(channel)
     }
-  }, [state.gameInitiated])
+  }, [])
 
   const updateState = useCallback((patch: Partial<BasketballState>, event?: BasketballEvent) => {
     setState(prev => {

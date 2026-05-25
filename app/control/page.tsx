@@ -93,11 +93,6 @@ export default function ControlPage() {
 
   // Subscribe to Supabase Realtime channel
   useEffect(() => {
-    if (!state.matchInitiated) {
-      connectedRef.current = false
-      return
-    }
-
     const ch = supabase.channel(CHANNEL_NAME)
     ch.subscribe((status) => {
       const isSubscribed = status === 'SUBSCRIBED'
@@ -110,7 +105,7 @@ export default function ControlPage() {
       channelRef.current = null
       supabase.removeChannel(ch)
     }
-  }, [state.matchInitiated])
+  }, [])
 
   const updateState = useCallback((patch: Partial<MatchState>, broadcastEvent?: BroadcastEvent) => {
     setState(prev => {
