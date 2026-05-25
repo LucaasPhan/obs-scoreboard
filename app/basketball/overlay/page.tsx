@@ -3,11 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BASKETBALL_CHANNEL_NAME,
-  BASKETBALL_LOCAL_API_PATH,
-  BASKETBALL_LOCAL_CHANNEL_KEY,
-  BASKETBALL_LOCAL_EVENT_KEY,
   BASKETBALL_STATE_ID,
-  BASKETBALL_SUPABASE_CONFIGURED,
   DEFAULT_BASKETBALL_STATE,
   basketballSupabase,
   getCurrentTimestamp,
@@ -22,30 +18,28 @@ export default function BasketballOverlayPage() {
   const [scoreAnimationIds, setScoreAnimationIds] = useState({ home: 0, away: 0 })
   const [boardAnim, setBoardAnim] = useState<'enter' | 'exit' | 'idle'>('enter')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const lastUpdatedRef = useRef<string | null>(null)
   const stateRef = useRef(state)
   const hydratedRef = useRef(false)
+  const clockRef = useRef(state.clock)
 
   const animateScore = useCallback((team: 'home' | 'away') => {
     setScoreAnimationIds(prev => ({ ...prev, [team]: prev[team] + 1 }))
   }, [])
 
-  const startLocalClock = useCallback((from: number) => {
+  const startLocalClock = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current)
-    let t = from
 
     timerRef.current = setInterval(() => {
-      t--
+      clockRef.current--
       setState(prev => {
-        if (t <= 0) {
+        if (clockRef.current <= 0) {
           if (timerRef.current) {
             clearInterval(timerRef.current)
             timerRef.current = null
           }
           return { ...prev, clock: 0, clockRunning: false, clockStartedAt: null }
         }
-
-        return { ...prev, clock: t, clockStartedAt: prev.clockRunning ? getCurrentTimestamp() : prev.clockStartedAt }
+        return { ...prev, clock: clockRef.current, clockStartedAt: prev.clockRunning ? getCurrentTimestamp() : prev.clockStartedAt }
       })
     }, 1000)
   }, [])
@@ -68,12 +62,16 @@ export default function BasketballOverlayPage() {
     if (homeScored) animateScore('home')
     if (awayScored) animateScore('away')
 
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
+    clockRef.current = next.clock
 
-    if (next.clockRunning && next.clock > 0) startLocalClock(next.clock)
+    if (next.clockRunning && next.clock > 0) {
+      if (!timerRef.current) startLocalClock()
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
   }, [animateScore, startLocalClock])
 
   const applyEvent = useCallback((event: BasketballEvent, syncedState?: BasketballState) => {
@@ -93,45 +91,34 @@ export default function BasketballOverlayPage() {
       }
       animateScore(event.team)
     } else if (event.type === 'SHOW') {
+      const wasVisible = stateRef.current.visible
       if (syncedState) applyState(resolveBasketballClock(syncedState), false)
       else {
         stateRef.current = { ...stateRef.current, visible: true, syncVersion: event.syncVersion ?? stateRef.current.syncVersion }
         setState(stateRef.current)
       }
-      setVisible(true)
-      setBoardAnim('enter')
-      setTimeout(() => setBoardAnim('idle'), 450)
+      if (!wasVisible) {
+        setVisible(true)
+        setBoardAnim('enter')
+        setTimeout(() => setBoardAnim('idle'), 450)
+      }
     } else if (event.type === 'HIDE') {
+      const wasVisible = stateRef.current.visible
       if (syncedState) applyState(resolveBasketballClock(syncedState), false)
       else {
         stateRef.current = { ...stateRef.current, visible: false, syncVersion: event.syncVersion ?? stateRef.current.syncVersion }
         setState(stateRef.current)
       }
-      setBoardAnim('exit')
-      setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 350)
+      if (wasVisible) {
+        setBoardAnim('exit')
+        setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 350)
+      }
     }
   }, [animateScore, applyState])
 
+  // Initial load from Supabase
   useEffect(() => {
     const load = async () => {
-      if (!BASKETBALL_SUPABASE_CONFIGURED) {
-        try {
-          const response = await fetch(BASKETBALL_LOCAL_API_PATH, { cache: 'no-store' })
-          if (response.ok) {
-            const data = await response.json() as { state?: Partial<BasketballState>; updatedAt?: number }
-            if (data.state) {
-              lastUpdatedRef.current = String(data.updatedAt ?? getCurrentTimestamp())
-              applyState(resolveBasketballClock(data.state), false)
-              return
-            }
-          }
-        } catch {
-          // Ignore local route startup races.
-        }
-
-        return
-      }
-
       const { data } = await basketballSupabase
         .from('overlay_state')
         .select('state, updated_at')
@@ -139,17 +126,14 @@ export default function BasketballOverlayPage() {
         .single()
 
       if (data?.state) {
-        lastUpdatedRef.current = data.updated_at
         applyState(resolveBasketballClock(data.state as Partial<BasketballState>), false)
       }
     }
-
     load()
   }, [applyState])
 
+  // Supabase Realtime: broadcast events + Postgres Changes
   useEffect(() => {
-    if (!BASKETBALL_SUPABASE_CONFIGURED || !state.gameInitiated) return
-
     const channel = basketballSupabase.channel(BASKETBALL_CHANNEL_NAME)
     channel
       .on('broadcast', { event: 'event' }, ({ payload }: { payload: BasketballEvent }) => {
@@ -160,9 +144,7 @@ export default function BasketballOverlayPage() {
         { event: '*', schema: 'public', table: 'overlay_state', filter: `id=eq.${BASKETBALL_STATE_ID}` },
         (payload) => {
           const next = payload.new as { state?: Partial<BasketballState>; updated_at?: string } | null
-
           if (next?.state) {
-            lastUpdatedRef.current = next.updated_at ?? null
             applyState(resolveBasketballClock(next.state))
           }
         }
@@ -170,71 +152,7 @@ export default function BasketballOverlayPage() {
     channel.subscribe()
 
     return () => { basketballSupabase.removeChannel(channel) }
-  }, [applyEvent, applyState, state.gameInitiated])
-
-  useEffect(() => {
-    if (typeof BroadcastChannel === 'undefined') return
-
-    const localChannel = new BroadcastChannel(BASKETBALL_LOCAL_CHANNEL_KEY)
-    localChannel.onmessage = ({ data }: MessageEvent<{ event: BasketballEvent; state?: Partial<BasketballState> }>) => {
-      applyEvent(data.event, data.state ? resolveBasketballClock(data.state) : undefined)
-    }
-
-    return () => localChannel.close()
-  }, [applyEvent])
-
-  useEffect(() => {
-    const onStorage = (storageEvent: StorageEvent) => {
-      if (storageEvent.key !== BASKETBALL_LOCAL_EVENT_KEY || !storageEvent.newValue) return
-
-      try {
-        const message = JSON.parse(storageEvent.newValue) as { event: BasketballEvent; state?: Partial<BasketballState> }
-        applyEvent(message.event, message.state ? resolveBasketballClock(message.state) : undefined)
-      } catch {
-        // Ignore stale or malformed events.
-      }
-    }
-
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, [applyEvent])
-
-  useEffect(() => {
-    const syncState = async () => {
-      if (!BASKETBALL_SUPABASE_CONFIGURED) {
-        try {
-          const response = await fetch(BASKETBALL_LOCAL_API_PATH, { cache: 'no-store' })
-          if (response.ok) {
-            const data = await response.json() as { state?: Partial<BasketballState>; updatedAt?: number }
-            const updatedAt = String(data.updatedAt ?? '')
-
-            if (data.state && updatedAt && updatedAt !== lastUpdatedRef.current) {
-              lastUpdatedRef.current = updatedAt
-              applyState(resolveBasketballClock(data.state))
-            }
-          }
-        } catch {
-          // Ignore transient local API misses.
-        }
-
-        return
-      }
-
-      const { data } = await basketballSupabase
-        .from('overlay_state')
-        .select('state, updated_at')
-        .eq('id', BASKETBALL_STATE_ID)
-        .single()
-
-      if (data?.state && data.updated_at !== lastUpdatedRef.current) {
-        lastUpdatedRef.current = data.updated_at
-        applyState(resolveBasketballClock(data.state as Partial<BasketballState>))
-      }
-    }
-
-    const poll = setInterval(syncState, state.gameInitiated ? (BASKETBALL_SUPABASE_CONFIGURED ? 10000 : 250) : 1000)
-    return () => clearInterval(poll)
-  }, [applyState, state.gameInitiated])
+  }, [applyEvent, applyState])
 
   const formatClock = (secs: number) => {
     const m = Math.floor(secs / 60)

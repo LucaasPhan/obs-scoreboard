@@ -3,11 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BASKETBALL_CHANNEL_NAME,
-  BASKETBALL_LOCAL_API_PATH,
-  BASKETBALL_LOCAL_CHANNEL_KEY,
-  BASKETBALL_LOCAL_EVENT_KEY,
   BASKETBALL_STATE_ID,
-  BASKETBALL_SUPABASE_CONFIGURED,
   DEFAULT_BASKETBALL_STATE,
   basketballSupabase,
   getCurrentTimestamp,
@@ -27,7 +23,6 @@ export default function BasketballControlPage() {
   const [saving, setSaving] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof basketballSupabase.channel> | null>(null)
-  const localChannelRef = useRef<BroadcastChannel | null>(null)
   const connectedRef = useRef(false)
   const stateRef = useRef(state)
   const nextSyncVersionRef = useRef(DEFAULT_BASKETBALL_STATE.syncVersion)
@@ -48,14 +43,6 @@ export default function BasketballControlPage() {
   const broadcast = useCallback(async (event: BasketballEvent, newState?: BasketballState) => {
     const s = newState ?? stateRef.current
 
-    try {
-      const message = { event, state: s, sentAt: getCurrentTimestamp() }
-      localChannelRef.current?.postMessage(message)
-      localStorage.setItem(BASKETBALL_LOCAL_EVENT_KEY, JSON.stringify(message))
-    } catch {
-      // Local browser delivery is a fast path for development and same-device OBS.
-    }
-
     if (channelRef.current && connectedRef.current) {
       try {
         await channelRef.current.send({ type: 'broadcast', event: 'event', payload: event })
@@ -69,23 +56,11 @@ export default function BasketballControlPage() {
       .then(async () => {
         try {
           setSaving(true)
-          await fetch(BASKETBALL_LOCAL_API_PATH, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ event, state: s }),
-          })
-        } catch {
-          // Local API may be unavailable in deployed serverless contexts.
-        }
-
-        if (!BASKETBALL_SUPABASE_CONFIGURED) return
-
-        try {
           await basketballSupabase
             .from('overlay_state')
             .upsert({ id: BASKETBALL_STATE_ID, state: s, updated_at: new Date().toISOString() })
         } catch {
-          // Local delivery still keeps same-machine overlays responsive.
+          // Persist failures are non-fatal; realtime broadcast already delivered the event.
         }
       })
       .finally(() => setSaving(false))
@@ -125,41 +100,9 @@ export default function BasketballControlPage() {
     stateRef.current = state
   }, [state])
 
-  useEffect(() => {
-    if (typeof BroadcastChannel === 'undefined') return
-
-    const localChannel = new BroadcastChannel(BASKETBALL_LOCAL_CHANNEL_KEY)
-    localChannelRef.current = localChannel
-
-    return () => {
-      localChannelRef.current = null
-      localChannel.close()
-    }
-  }, [])
-
+  // Load initial state from Supabase
   useEffect(() => {
     const load = async () => {
-      if (!BASKETBALL_SUPABASE_CONFIGURED) {
-        try {
-          const response = await fetch(BASKETBALL_LOCAL_API_PATH, { cache: 'no-store' })
-          if (response.ok) {
-            const data = await response.json() as { state?: Partial<BasketballState> }
-            if (data.state) {
-              const next = resolveBasketballClock(data.state)
-              nextSyncVersionRef.current = Math.max(nextSyncVersionRef.current, next.syncVersion)
-              stateRef.current = next
-              setState(next)
-              if (next.clockRunning) startLocalClock(next.clock)
-              return
-            }
-          }
-        } catch {
-          // Ignore local API startup races.
-        }
-
-        return
-      }
-
       const { data } = await basketballSupabase
         .from('overlay_state')
         .select('state')
@@ -174,12 +117,12 @@ export default function BasketballControlPage() {
         if (next.clockRunning) startLocalClock(next.clock)
       }
     }
-
     load()
   }, [startLocalClock])
 
+  // Subscribe to Supabase Realtime channel
   useEffect(() => {
-    if (!BASKETBALL_SUPABASE_CONFIGURED || !state.gameInitiated) {
+    if (!state.gameInitiated) {
       connectedRef.current = false
       return
     }
@@ -325,7 +268,7 @@ export default function BasketballControlPage() {
     return `${m}:${String(s).padStart(2, '0')}`
   }
 
-  const liveActive = state.gameInitiated && (!BASKETBALL_SUPABASE_CONFIGURED || connected)
+  const liveActive = state.gameInitiated && connected
 
   return (
     <>
@@ -356,7 +299,7 @@ export default function BasketballControlPage() {
           {saving && <span style={{ color: 'var(--muted)', fontSize: 11, letterSpacing: '.12em' }}>SAVING</span>}
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: liveActive ? 'var(--green)' : 'var(--muted)', boxShadow: liveActive ? '0 0 9px var(--green)' : 'none', animation: liveActive ? 'pulse-dot 1.4s infinite' : 'none' }} />
           <span style={{ color: liveActive ? 'var(--green)' : 'var(--muted)', fontSize: 12, fontWeight: 900, letterSpacing: '.1em' }}>
-            {state.gameInitiated ? (BASKETBALL_SUPABASE_CONFIGURED ? (connected ? 'LIVE' : 'CONNECTING') : 'LOCAL LIVE') : 'STANDBY'}
+            {state.gameInitiated ? (connected ? 'LIVE' : 'CONNECTING') : 'STANDBY'}
           </span>
         </div>
       </header>

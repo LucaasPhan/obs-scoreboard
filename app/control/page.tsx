@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 const STATUSES = ['PRE', '1H', 'HT', '2H', 'ET', 'PEN', 'FT']
 
@@ -10,10 +10,9 @@ export default function ControlPage() {
   const [connected, setConnected] = useState(false)
   const [toast, setToast] = useState('')
   const [toastVisible, setToastVisible] = useState(false)
-  const [savingTimer, setSavingTimer] = useState(false)
+  const [saving, setSaving] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
-  const localChannelRef = useRef<BroadcastChannel | null>(null)
   const connectedRef = useRef(false)
   const stateRef = useRef(state)
 
@@ -25,41 +24,22 @@ export default function ControlPage() {
 
   const broadcast = useCallback(async (event: BroadcastEvent, newState?: MatchState) => {
     const s = newState ?? stateRef.current
-    const channel = channelRef.current
 
-    try {
-      const message = { event, state: s, sentAt: getCurrentTimestamp() }
-      localChannelRef.current?.postMessage(message)
-      localStorage.setItem(LOCAL_EVENT_KEY, JSON.stringify(message))
-    } catch {
-      // Browser local delivery is only a fast path; Supabase remains the source of truth.
-    }
-
-    if (channel && connectedRef.current) {
+    if (channelRef.current && connectedRef.current) {
       try {
-        await channel.send({ type: 'broadcast', event: 'event', payload: event })
+        await channelRef.current.send({ type: 'broadcast', event: 'event', payload: event })
       } catch {
-        // The persisted state and local event keep the overlay in sync when realtime is unavailable.
+        // The persisted state keeps the overlay in sync when realtime is unavailable.
       }
     }
 
     try {
-      await fetch(LOCAL_API_PATH, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event, state: s }),
-      })
-    } catch {
-      // Local API sync is for dev and OBS localhost. Supabase can still persist when configured.
-    }
-
-    if (!SUPABASE_CONFIGURED) return
-
-    try {
-      setSavingTimer(true)
+      setSaving(true)
       await supabase.from('overlay_state').upsert({ id: 'singleton', state: s, updated_at: new Date().toISOString() })
+    } catch {
+      // Non-fatal; realtime broadcast already delivered the event.
     } finally {
-      setSavingTimer(false)
+      setSaving(false)
     }
   }, [])
 
@@ -93,40 +73,9 @@ export default function ControlPage() {
     stateRef.current = state
   }, [state])
 
-  useEffect(() => {
-    if (typeof BroadcastChannel === 'undefined') return
-
-    const localChannel = new BroadcastChannel(LOCAL_CHANNEL_KEY)
-    localChannelRef.current = localChannel
-
-    return () => {
-      localChannelRef.current = null
-      localChannel.close()
-    }
-  }, [])
-
-  // Load state on mount
+  // Load initial state from Supabase
   useEffect(() => {
     const load = async () => {
-      if (!SUPABASE_CONFIGURED) {
-        try {
-          const localResponse = await fetch(LOCAL_API_PATH, { cache: 'no-store' })
-          if (localResponse.ok) {
-            const localData = await localResponse.json() as { state?: Partial<MatchState> }
-            if (localData.state) {
-              const s = resolveTimerState(localData.state)
-              setState(s)
-              if (s.timerRunning) startLocalTimer(s.timer)
-              return
-            }
-          }
-        } catch {
-          // Local route can be unavailable during early dev-server startup.
-        }
-
-        return
-      }
-
       const { data } = await supabase
         .from('overlay_state')
         .select('state')
@@ -134,6 +83,7 @@ export default function ControlPage() {
         .single()
       if (data?.state) {
         const s = resolveTimerState(data.state as Partial<MatchState>)
+        stateRef.current = s
         setState(s)
         if (s.timerRunning) startLocalTimer(s.timer)
       }
@@ -141,9 +91,9 @@ export default function ControlPage() {
     load()
   }, [startLocalTimer])
 
-  // Setup broadcast channel
+  // Subscribe to Supabase Realtime channel
   useEffect(() => {
-    if (!SUPABASE_CONFIGURED || !state.matchInitiated) {
+    if (!state.matchInitiated) {
       connectedRef.current = false
       return
     }
@@ -166,6 +116,7 @@ export default function ControlPage() {
     setState(prev => {
       const next = { ...prev, ...patch }
       const event = broadcastEvent ?? { type: 'STATE_UPDATE', payload: next }
+      stateRef.current = next
       broadcast(event, next)
       return next
     })
@@ -177,6 +128,7 @@ export default function ControlPage() {
     const newScore = Math.max(0, stateRef.current[key] + delta)
     const patch = { [key]: newScore } as Partial<MatchState>
     const next = { ...stateRef.current, ...patch }
+    stateRef.current = next
     setState(next)
     const event: BroadcastEvent = delta > 0
       ? { type: 'SCORE_GOAL', team, newScore }
@@ -216,6 +168,7 @@ export default function ControlPage() {
     setState(prev => ({ ...prev, timer, timerRunning, timerStartedAt }))
     if (timerRunning) startLocalTimer(timer)
     const next = { ...stateRef.current, timer, timerRunning, timerStartedAt }
+    stateRef.current = next
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast(`⏱ JUMPED TO ${Math.floor(timer / 60)}:00`)
   }
@@ -235,6 +188,7 @@ export default function ControlPage() {
       next.timerStartedAt = null
     }
 
+    stateRef.current = next
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
   }
@@ -254,6 +208,7 @@ export default function ControlPage() {
       next.timerStartedAt = null
     }
 
+    stateRef.current = next
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
   }
@@ -277,13 +232,11 @@ export default function ControlPage() {
 
   const showOverlay = () => {
     updateState({ visible: true }, { type: 'SHOW' })
-    broadcast({ type: 'SHOW' })
     showToast('▶ OVERLAY SHOWN')
   }
 
   const hideOverlay = () => {
     updateState({ visible: false }, { type: 'HIDE' })
-    broadcast({ type: 'HIDE' })
     showToast('■ OVERLAY HIDDEN')
   }
 
@@ -292,6 +245,7 @@ export default function ControlPage() {
     connectedRef.current = false
     setConnected(false)
     const next: MatchState = { ...stateRef.current, homeScore: 0, awayScore: 0, timer: 0, timerRunning: false, timerStartedAt: null, injuryTime: 0, matchInitiated: false, visible: false, status: 'PRE' }
+    stateRef.current = next
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast('↺ MATCH RESET')
@@ -301,12 +255,13 @@ export default function ControlPage() {
     if (stateRef.current.matchInitiated) return
 
     const next: MatchState = { ...stateRef.current, matchInitiated: true, visible: true, status: stateRef.current.status || 'PRE' }
+    stateRef.current = next
     setState(next)
     broadcast({ type: 'STATE_UPDATE', payload: next }, next)
     showToast('● MATCH INITIATED')
   }
 
-  const liveActive = state.matchInitiated && (!SUPABASE_CONFIGURED || connected)
+  const liveActive = state.matchInitiated && connected
 
   return (
     <>
@@ -361,7 +316,7 @@ export default function ControlPage() {
           Overlay Control
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          {savingTimer && <span style={{ fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em' }}>SAVING…</span>}
+          {saving && <span style={{ fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em' }}>SAVING…</span>}
           <div style={{
             width: 8, height: 8, borderRadius: '50%',
             background: liveActive ? 'var(--green)' : 'var(--muted)',
@@ -369,7 +324,7 @@ export default function ControlPage() {
             animation: liveActive ? 'pulse-dot 1.5s infinite' : 'none',
           }} />
           <span style={{ fontSize: 12, color: liveActive ? 'var(--green)' : 'var(--muted)', letterSpacing: '0.08em', fontWeight: 600 }}>
-            {state.matchInitiated ? (SUPABASE_CONFIGURED ? (connected ? 'LIVE' : 'CONNECTING…') : 'LOCAL LIVE') : 'STANDBY'}
+            {state.matchInitiated ? (connected ? 'LIVE' : 'CONNECTING…') : 'STANDBY'}
           </span>
         </div>
       </header>

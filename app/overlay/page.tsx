@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { supabase, CHANNEL_NAME, DEFAULT_STATE, LOCAL_API_PATH, LOCAL_CHANNEL_KEY, LOCAL_EVENT_KEY, SUPABASE_CONFIGURED, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, type MatchState, type BroadcastEvent } from '@/lib/supabase'
+import { supabase, CHANNEL_NAME, DEFAULT_STATE, getCurrentTimestamp, getTimerLimitSeconds, resolveTimerState, type MatchState, type BroadcastEvent } from '@/lib/supabase'
 
 export default function OverlayPage() {
   const [state, setState] = useState<MatchState>(DEFAULT_STATE)
@@ -9,31 +9,29 @@ export default function OverlayPage() {
   const [scoreAnimationIds, setScoreAnimationIds] = useState({ home: 0, away: 0 })
   const [boardAnim, setBoardAnim] = useState<'enter' | 'exit' | 'idle'>('enter')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const lastUpdatedRef = useRef<string | null>(null)
   const stateRef = useRef(state)
   const hydratedRef = useRef(false)
+  const timerCountRef = useRef(state.timer)
 
   const animateGoal = useCallback((team: 'home' | 'away') => {
     setScoreAnimationIds(prev => ({ ...prev, [team]: prev[team] + 1 }))
   }, [])
 
-  const startLocalTimer = useCallback((from: number) => {
+  const startLocalTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current)
-    let t = from
+
     timerRef.current = setInterval(() => {
-      t++
+      timerCountRef.current++
       setState(prev => {
         const limit = getTimerLimitSeconds(prev)
-
-        if (t >= limit) {
+        if (timerCountRef.current >= limit) {
           if (timerRef.current) {
             clearInterval(timerRef.current)
             timerRef.current = null
           }
           return { ...prev, timer: limit, timerRunning: false, timerStartedAt: null }
         }
-
-        return { ...prev, timer: t, timerStartedAt: prev.timerRunning ? getCurrentTimestamp() : prev.timerStartedAt }
+        return { ...prev, timer: timerCountRef.current, timerStartedAt: prev.timerRunning ? getCurrentTimestamp() : prev.timerStartedAt }
       })
     }, 1000)
   }, [])
@@ -53,12 +51,16 @@ export default function OverlayPage() {
     if (homeGoal) animateGoal('home')
     if (awayGoal) animateGoal('away')
 
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
+    timerCountRef.current = next.timer
 
-    if (next.timerRunning && next.timer < getTimerLimitSeconds(next)) startLocalTimer(next.timer)
+    if (next.timerRunning && next.timer < getTimerLimitSeconds(next)) {
+      if (!timerRef.current) startLocalTimer()
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
   }, [animateGoal, startLocalTimer])
 
   const applyEvent = useCallback((payload: BroadcastEvent, syncedState?: MatchState) => {
@@ -76,53 +78,40 @@ export default function OverlayPage() {
       }
       animateGoal(payload.team)
     } else if (payload.type === 'SHOW') {
+      const wasVisible = stateRef.current.visible
       if (syncedState) applyState(resolveTimerState(syncedState), false)
-      setVisible(true)
-      setBoardAnim('enter')
-      setTimeout(() => setBoardAnim('idle'), 600)
+      if (!wasVisible) {
+        setVisible(true)
+        setBoardAnim('enter')
+        setTimeout(() => setBoardAnim('idle'), 600)
+      }
     } else if (payload.type === 'HIDE') {
+      const wasVisible = stateRef.current.visible
       if (syncedState) applyState(resolveTimerState(syncedState), false)
-      setBoardAnim('exit')
-      setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 500)
+      if (wasVisible) {
+        setBoardAnim('exit')
+        setTimeout(() => { setVisible(false); setBoardAnim('idle') }, 500)
+      }
     }
   }, [animateGoal, applyState])
 
+  // Initial load from Supabase
   useEffect(() => {
     const load = async () => {
-      if (!SUPABASE_CONFIGURED) {
-        try {
-          const localResponse = await fetch(LOCAL_API_PATH, { cache: 'no-store' })
-          if (localResponse.ok) {
-            const localData = await localResponse.json() as { state?: Partial<MatchState>; updatedAt?: number }
-            if (localData.state) {
-              lastUpdatedRef.current = String(localData.updatedAt ?? getCurrentTimestamp())
-              applyState(resolveTimerState(localData.state), false)
-              return
-            }
-          }
-        } catch {
-          // Local route can be unavailable during early dev-server startup.
-        }
-
-        return
-      }
-
       const { data } = await supabase
         .from('overlay_state')
         .select('state, updated_at')
         .eq('id', 'singleton')
         .single()
       if (data?.state) {
-        lastUpdatedRef.current = data.updated_at
         applyState(resolveTimerState(data.state as Partial<MatchState>), false)
       }
     }
     load()
   }, [applyState])
 
+  // Supabase Realtime: broadcast events + Postgres Changes
   useEffect(() => {
-    if (!SUPABASE_CONFIGURED || !state.matchInitiated) return
-
     const channel = supabase.channel(CHANNEL_NAME)
     channel
       .on('broadcast', { event: 'event' }, ({ payload }: { payload: BroadcastEvent }) => {
@@ -133,80 +122,14 @@ export default function OverlayPage() {
         { event: '*', schema: 'public', table: 'overlay_state', filter: 'id=eq.singleton' },
         (payload) => {
           const next = payload.new as { state?: Partial<MatchState>; updated_at?: string } | null
-
           if (next?.state) {
-            lastUpdatedRef.current = next.updated_at ?? null
             applyState(resolveTimerState(next.state))
           }
         }
       )
     channel.subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [applyEvent, applyState, state.matchInitiated])
-
-  useEffect(() => {
-    if (typeof BroadcastChannel === 'undefined') return
-
-    const localChannel = new BroadcastChannel(LOCAL_CHANNEL_KEY)
-    localChannel.onmessage = ({ data }: MessageEvent<{ event: BroadcastEvent; state?: Partial<MatchState> }>) => {
-      applyEvent(data.event, data.state ? resolveTimerState(data.state) : undefined)
-    }
-
-    return () => localChannel.close()
-  }, [applyEvent])
-
-  useEffect(() => {
-    const onStorage = (storageEvent: StorageEvent) => {
-      if (storageEvent.key !== LOCAL_EVENT_KEY || !storageEvent.newValue) return
-
-      try {
-        const message = JSON.parse(storageEvent.newValue) as { event: BroadcastEvent; state?: Partial<MatchState> }
-        applyEvent(message.event, message.state ? resolveTimerState(message.state) : undefined)
-      } catch {
-        // Ignore malformed local events from stale tabs or manual storage edits.
-      }
-    }
-
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, [applyEvent])
-
-  useEffect(() => {
-    const syncFromDb = async () => {
-      if (!SUPABASE_CONFIGURED) {
-        try {
-          const localResponse = await fetch(LOCAL_API_PATH, { cache: 'no-store' })
-          if (localResponse.ok) {
-            const localData = await localResponse.json() as { state?: Partial<MatchState>; updatedAt?: number }
-            const updatedAt = String(localData.updatedAt ?? '')
-
-            if (localData.state && updatedAt && updatedAt !== lastUpdatedRef.current) {
-              lastUpdatedRef.current = updatedAt
-              applyState(resolveTimerState(localData.state))
-            }
-          }
-        } catch {
-          // Local route can be unavailable during early dev-server startup.
-        }
-
-        return
-      }
-
-      const { data } = await supabase
-        .from('overlay_state')
-        .select('state, updated_at')
-        .eq('id', 'singleton')
-        .single()
-
-      if (data?.state && data.updated_at !== lastUpdatedRef.current) {
-        lastUpdatedRef.current = data.updated_at
-        applyState(resolveTimerState(data.state as Partial<MatchState>))
-      }
-    }
-
-    const poll = setInterval(syncFromDb, state.matchInitiated ? (SUPABASE_CONFIGURED ? 10000 : 250) : 1000)
-    return () => clearInterval(poll)
-  }, [applyState, state.matchInitiated])
+  }, [applyEvent, applyState])
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60)
