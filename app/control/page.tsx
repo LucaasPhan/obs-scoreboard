@@ -11,6 +11,7 @@ export default function ControlPage() {
   const [toast, setToast] = useState('')
   const [toastVisible, setToastVisible] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [displayNow, setDisplayNow] = useState(() => getCurrentTimestamp())
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
   const localChannelRef = useRef<BroadcastChannel | null>(null)
@@ -87,6 +88,16 @@ export default function ControlPage() {
   useEffect(() => {
     stateRef.current = state
   }, [state])
+
+  useEffect(() => {
+    if (!state.timerRunning) {
+      setDisplayNow(getCurrentTimestamp())
+      return
+    }
+
+    const displayTimer = setInterval(() => setDisplayNow(getCurrentTimestamp()), 50)
+    return () => clearInterval(displayTimer)
+  }, [state.timerRunning])
 
   // Load initial state
   useEffect(() => {
@@ -245,9 +256,21 @@ export default function ControlPage() {
   }
 
   const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60)
-    const s = secs % 60
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    return formatTimerMs(secs * 1000)
+  }
+
+  const getDisplayTimerMs = () => {
+    const baseMs = state.timer * 1000
+    if (!state.timerRunning || !state.timerStartedAt) return baseMs
+
+    return baseMs + Math.max(0, displayNow - state.timerStartedAt)
+  }
+
+  const formatTimerMs = (totalMs: number) => {
+    const m = Math.floor(totalMs / 60000)
+    const s = Math.floor(totalMs / 1000) % 60
+    const ms = Math.floor((totalMs % 1000) / 10)
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}:${String(ms).padStart(2, '0')}`
   }
 
   const setStatus = (s: string) => {
@@ -333,20 +356,44 @@ export default function ControlPage() {
         @keyframes toast-out { from { transform: translateY(0); opacity: 1; } to { transform: translateY(60px); opacity: 0; } }
         @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
         @keyframes score-bounce { 0%,100% { transform: scale(1); } 50% { transform: scale(1.4); color: var(--brand); } }
+
+        .control-shell { max-width: 860px; margin: 0 auto; padding: 16px 16px 60px; }
+        .control-header { background: var(--panel); border-bottom: 2px solid var(--brand); padding: 12px 20px; display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 100; }
+        .header-status { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+        .preview-card { background: linear-gradient(135deg,#1A1A30,#0F0F20); border: 1px solid var(--border); border-radius: 10px; padding: 24px 20px; margin-bottom: 14px; display: flex; align-items: center; justify-content: center; min-height: 110px; position: relative; }
+        .preview-board { display: flex; height: 64px; border-radius: 6px; overflow: hidden; box-shadow: 0 6px 28px rgba(0,0,0,0.5); }
+        .primary-actions { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+        .two-col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+        .quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 6px; }
+
+        @media (max-width: 700px) {
+          body { font-size: 16px; }
+          input[type=text], input[type=number], select { min-height: 44px; font-size: 16px; }
+          input[type=color] { width: 48px; height: 44px; }
+          .control-header { padding: 10px 12px; gap: 10px; flex-wrap: wrap; }
+          .control-header .header-title { font-size: 17px !important; }
+          .header-status { width: 100%; margin-left: 52px; justify-content: flex-start; }
+          .control-shell { padding: 12px 10px 84px; }
+          .preview-card { padding: 34px 10px 14px; overflow-x: auto; justify-content: flex-start; }
+          .preview-board { transform: scale(.88); transform-origin: left center; flex-shrink: 0; }
+          .primary-actions, .two-col-grid, .quick-grid { grid-template-columns: 1fr !important; }
+          .control-card { padding: 14px !important; border-radius: 8px !important; }
+          .control-toast { left: 10px !important; right: 10px !important; bottom: 12px !important; text-align: center; }
+        }
       `}</style>
 
       {/* Header */}
-      <header style={{ background: 'var(--panel)', borderBottom: '2px solid var(--brand)', padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 14, position: 'sticky', top: 0, zIndex: 100 }}>
+      <header className="control-header">
         <div style={{ background: 'var(--brand)', width: 38, height: 38, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <svg viewBox="0 0 40 40" fill="none" width="24" height="24">
             <path d="M4 8 H11 L15 25 L22 8 H29 L18 32 H12 Z" fill="white"/>
             <path d="M22 8 H36 V14 H27 L25 17 H36 V32 H21 V26 H30 L32 23 H21 V8 Z" fill="white"/>
           </svg>
         </div>
-        <span className="oswald" style={{ fontSize: 20, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+        <span className="oswald header-title" style={{ fontSize: 20, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
           Overlay Control
         </span>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="header-status">
           {saving && <span style={{ fontSize: 11, color: 'var(--muted)', letterSpacing: '0.08em' }}>SAVING…</span>}
           <div style={{
             width: 8, height: 8, borderRadius: '50%',
@@ -360,18 +407,12 @@ export default function ControlPage() {
         </div>
       </header>
 
-      <div style={{ maxWidth: 860, margin: '0 auto', padding: '16px 16px 60px' }}>
+      <div className="control-shell">
 
         {/* Live Preview */}
-        <div style={{
-          background: 'linear-gradient(135deg,#1A1A30,#0F0F20)',
-          border: '1px solid var(--border)', borderRadius: 10,
-          padding: '24px 20px', marginBottom: 14,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          minHeight: 110, position: 'relative'
-        }}>
+        <div className="preview-card">
           <span style={{ position: 'absolute', top: 10, left: 14, fontSize: 10, letterSpacing: '0.15em', color: 'var(--muted)', fontWeight: 600 }}>LIVE PREVIEW</span>
-          <div style={{ display: 'flex', height: 64, borderRadius: 6, overflow: 'hidden', boxShadow: '0 6px 28px rgba(0,0,0,0.5)' }}>
+          <div className="preview-board">
             <div style={{ width: 50, background: '#1a56db', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <svg viewBox="0 0 40 40" fill="none" width="24" height="24">
                 <path d="M4 8 H11 L15 25 L22 8 H29 L18 32 H12 Z" fill="white"/>
@@ -408,7 +449,7 @@ export default function ControlPage() {
         </div>
 
         {/* Visibility */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+        <div className="primary-actions">
           <Btn color="brand" onClick={initiateMatch} disabled={state.matchInitiated}>
             {state.matchInitiated ? '● MATCH LIVE' : '● INITIATE MATCH'}
           </Btn>
@@ -417,7 +458,7 @@ export default function ControlPage() {
         </div>
 
         {/* Teams + Scores */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div className="two-col-grid">
           {(['home', 'away'] as const).map(team => (
             <Card key={team} title={`${team === 'home' ? '🏠' : '✈️'} ${team.toUpperCase()} TEAM`}>
               <Field label="Team Name">
@@ -452,7 +493,7 @@ export default function ControlPage() {
         </div>
 
         {/* Timer + Status */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div className="two-col-grid">
 
           {/* Timer */}
           <Card title="⏱ MATCH TIMER">
@@ -465,7 +506,7 @@ export default function ControlPage() {
               border: '1px solid var(--border)',
               transition: 'color 0.3s',
             }}>
-              {formatTime(state.timer)}
+              {formatTimerMs(getDisplayTimerMs())}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 7, marginBottom: 10 }}>
               <Btn color="green" onClick={timerStart} disabled={state.timerRunning}>▶</Btn>
@@ -514,7 +555,7 @@ export default function ControlPage() {
 
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4 }}>
               <Label>Quick Sets</Label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7, marginTop: 6 }}>
+              <div className="quick-grid">
                 <Btn color="brand" onClick={() => { timerJump(state.halfDurationMinutes + state.injuryTime); setStatus('HT') }}>SET HALF TIME</Btn>
                 <Btn color="muted" onClick={() => { timerJump(0); setStatus('2H') }}>2ND HALF START</Btn>
               </div>
@@ -546,7 +587,7 @@ export default function ControlPage() {
       </div>
 
       {/* Toast */}
-      <div style={{
+      <div className="control-toast" style={{
         position: 'fixed', bottom: 24, right: 20,
         background: 'var(--green)', color: '#0a0a0a',
         fontFamily: 'Oswald, sans-serif', fontSize: 13, fontWeight: 700,
@@ -566,7 +607,7 @@ export default function ControlPage() {
 // Reusable tiny components
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px' }}>
+    <div className="control-card" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px' }}>
       <div style={{ fontFamily: 'Oswald, sans-serif', fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 3, height: 14, background: 'var(--brand)', borderRadius: 2, display: 'inline-block' }} />
         {title}
@@ -602,8 +643,9 @@ function Btn({ children, onClick, color, disabled }: { children: React.ReactNode
       border: 'none', borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
       fontFamily: 'Oswald, sans-serif', fontSize: 13, fontWeight: 700,
       letterSpacing: '0.08em', textTransform: 'uppercase',
-      padding: '9px 12px', transition: 'all 0.15s', opacity: disabled ? 0.5 : 1,
+      padding: '10px 12px', minHeight: 44, transition: 'all 0.15s', opacity: disabled ? 0.5 : 1,
       width: '100%',
+      touchAction: 'manipulation',
     }}>
       {children}
     </button>
@@ -613,7 +655,7 @@ function Btn({ children, onClick, color, disabled }: { children: React.ReactNode
 function ScoreBtn({ onClick, sign, red }: { onClick: () => void; sign: string; red?: boolean }) {
   return (
     <button onClick={onClick} style={{
-      width: 36, height: 36, borderRadius: 6, border: 'none', cursor: 'pointer',
+      width: 44, height: 44, borderRadius: 6, border: 'none', cursor: 'pointer',
       background: red ? 'var(--brand)' : 'var(--border)', color: 'white',
       fontSize: 20, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center',
       transition: 'transform 0.1s',

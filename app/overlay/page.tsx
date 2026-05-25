@@ -385,8 +385,6 @@ export default function OverlayPage() {
       {visible && (
         <div id="overlay-root">
           <div className={`board ${animClass}`}>
-
-            {/* Brand */}
             <div className="brand">
               <svg viewBox="0 0 40 40" fill="none" width="28" height="28">
                 <rect x="2" y="2" width="36" height="36" rx="4" fill="rgba(255,255,255,0.1)"/>
@@ -400,7 +398,6 @@ export default function OverlayPage() {
               </svg>
             </div>
 
-            {/* Teams */}
             <div className="teams">
               {(['home', 'away'] as const).map(team => (
                 <div key={team} className="team-row">
@@ -414,32 +411,30 @@ export default function OverlayPage() {
                   <div className="team-accent" style={{ background: state[`${team}Color`] }} />
                 </div>
               ))}
-      <div id="overlay-root">
-        <div className={`board ${animClass}`}>
-          {/* HOME */}
-          <div className="team-block home" style={{ '--team-color': state.homeColor } as React.CSSProperties}>
-            <div className="team-info">
-              <span className="team-name">{state.homeAbbr}</span>
             </div>
-            <span className={`score-val ${homeAnim ? 'score-updating' : ''}`}>{state.homeScore}</span>
-          </div>
 
-          {/* TIME */}
-          <div className="timeblock">
-            <span className="time-val">{formatTime(state.timer)}</span>
-            <span className="status-val">{state.status}</span>
-            {state.injuryTime > 0 && <span className="injury-time">+{state.injuryTime}</span>}
-          </div>
+            <div className="scores">
+              {(['home', 'away'] as const).map(team => (
+                <div key={team} className="score-cell">
+                  <span key={`${team}-${scoreAnimationIds[team]}`} className={`score-val ${scoreAnimationIds[team] > 0 ? 'score-updating' : ''}`}>
+                    {state[`${team}Score`]}
+                  </span>
+                </div>
+              ))}
+            </div>
 
-          {/* AWAY */}
-          <div className="team-block away" style={{ '--team-color': state.awayColor } as React.CSSProperties}>
-            <span className={`score-val ${awayAnim ? 'score-updating' : ''}`}>{state.awayScore}</span>
-            <div className="team-info" style={{ alignItems: 'flex-end' }}>
-              <span className="team-name">{state.awayAbbr}</span>
+            <div className="timeblock">
+              <div className="time-top">
+                <span className="time-val">{formatTime(state.timer)}</span>
+                {state.injuryTime > 0 && <span className="injury-val">+{state.injuryTime}</span>}
+              </div>
+              <div className="time-bottom">
+                <span className="status-val">{state.status}</span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   )
 }

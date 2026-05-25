@@ -25,6 +25,7 @@ export default function BasketballControlPage() {
   const [toast, setToast] = useState('')
   const [toastVisible, setToastVisible] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [displayNow, setDisplayNow] = useState(() => getCurrentTimestamp())
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const channelRef = useRef<ReturnType<typeof basketballSupabase.channel> | null>(null)
   const localChannelRef = useRef<BroadcastChannel | null>(null)
@@ -114,6 +115,16 @@ export default function BasketballControlPage() {
   useEffect(() => {
     stateRef.current = state
   }, [state])
+
+  useEffect(() => {
+    if (!state.clockRunning) {
+      setDisplayNow(getCurrentTimestamp())
+      return
+    }
+
+    const displayTimer = setInterval(() => setDisplayNow(getCurrentTimestamp()), 50)
+    return () => clearInterval(displayTimer)
+  }, [state.clockRunning])
 
   // Load initial state
   useEffect(() => {
@@ -293,9 +304,21 @@ export default function BasketballControlPage() {
   }
 
   const formatClock = (secs: number) => {
-    const m = Math.floor(secs / 60)
-    const s = secs % 60
-    return `${m}:${String(s).padStart(2, '0')}`
+    return formatClockMs(secs * 1000)
+  }
+
+  const getDisplayClockMs = () => {
+    const baseMs = state.clock * 1000
+    if (!state.clockRunning || !state.clockStartedAt) return baseMs
+
+    return Math.max(0, baseMs - Math.max(0, displayNow - state.clockStartedAt))
+  }
+
+  const formatClockMs = (totalMs: number) => {
+    const m = Math.floor(totalMs / 60000)
+    const s = Math.floor(totalMs / 1000) % 60
+    const ms = Math.floor((totalMs % 1000) / 10)
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}:${String(ms).padStart(2, '0')}`
   }
 
   const liveActive = state.gameInitiated && connected
@@ -317,15 +340,39 @@ export default function BasketballControlPage() {
         @keyframes toast-in { from { transform:translateY(50px); opacity:0; } to { transform:translateY(0); opacity:1; } }
         @keyframes toast-out { from { transform:translateY(0); opacity:1; } to { transform:translateY(50px); opacity:0; } }
         @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+
+        .basketball-header { height: 66px; background: #0B0F17; border-bottom: 2px solid var(--nba-red); display: flex; align-items: center; gap: 14px; padding: 0 22px; position: sticky; top: 0; z-index: 10; }
+        .basketball-status { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+        .basketball-shell { max-width: 980px; margin: 0 auto; padding: 18px 16px 64px; }
+        .basketball-preview { background: linear-gradient(135deg,#101827,#070A10); border: 1px solid var(--line); border-radius: 8px; padding: 22px; margin-bottom: 14px; display: grid; place-items: center; position: relative; }
+        .basketball-preview-board { display: flex; height: 64px; border-radius: 5px; overflow: hidden; box-shadow: 0 12px 30px rgba(0,0,0,.55); font-family: Inter, sans-serif; }
+        .basketball-actions { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+        .basketball-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+
+        @media (max-width: 760px) {
+          input { min-height: 44px; font-size: 16px; }
+          input[type=color] { width: 48px; height: 44px; }
+          .basketball-header { height: auto; min-height: 64px; padding: 10px 12px; gap: 10px; flex-wrap: wrap; }
+          .basketball-title { font-size: 16px !important; }
+          .basketball-subtitle { font-size: 10px !important; }
+          .basketball-status { width: 100%; margin-left: 52px; justify-content: flex-start; }
+          .basketball-shell { padding: 12px 10px 84px; }
+          .basketball-preview { padding: 34px 10px 14px; overflow-x: auto; place-items: start; }
+          .basketball-preview-board { transform: scale(.82); transform-origin: left center; flex-shrink: 0; }
+          .basketball-actions, .basketball-two-col { grid-template-columns: 1fr !important; }
+          .basketball-card { padding: 14px !important; }
+          .basketball-clock-display { font-size: 32px !important; height: 68px !important; }
+          .basketball-toast { left: 10px !important; right: 10px !important; bottom: 12px !important; text-align: center; }
+        }
       `}</style>
 
-      <header style={{ height: 66, background: '#0B0F17', borderBottom: '2px solid var(--nba-red)', display: 'flex', alignItems: 'center', gap: 14, padding: '0 22px', position: 'sticky', top: 0, zIndex: 10 }}>
+      <header className="basketball-header">
         <div style={{ width: 42, height: 42, borderRadius: 5, background: 'linear-gradient(90deg,var(--nba-blue) 0 50%,var(--nba-red) 50%)', display: 'grid', placeItems: 'center', font: '900 18px Inter', color: 'white' }}>B</div>
         <div>
-          <div style={{ font: '900 18px Inter', letterSpacing: '.08em' }}>BASKETBALL CONTROL</div>
-          <div style={{ color: 'var(--muted)', fontSize: 11, letterSpacing: '.12em' }}>NBA STYLE SCOREBUG</div>
+          <div className="basketball-title" style={{ font: '900 18px Inter', letterSpacing: '.08em' }}>BASKETBALL CONTROL</div>
+          <div className="basketball-subtitle" style={{ color: 'var(--muted)', fontSize: 11, letterSpacing: '.12em' }}>NBA STYLE SCOREBUG</div>
         </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="basketball-status">
           {saving && <span style={{ color: 'var(--muted)', fontSize: 11, letterSpacing: '.12em' }}>SAVING</span>}
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: liveActive ? 'var(--green)' : 'var(--muted)', boxShadow: liveActive ? '0 0 9px var(--green)' : 'none', animation: liveActive ? 'pulse-dot 1.4s infinite' : 'none' }} />
           <span style={{ color: liveActive ? 'var(--green)' : 'var(--muted)', fontSize: 12, fontWeight: 900, letterSpacing: '.1em' }}>
@@ -334,30 +381,30 @@ export default function BasketballControlPage() {
         </div>
       </header>
 
-      <main style={{ maxWidth: 980, margin: '0 auto', padding: '18px 16px 64px' }}>
-        <section style={{ background: 'linear-gradient(135deg,#101827,#070A10)', border: '1px solid var(--line)', borderRadius: 8, padding: 22, marginBottom: 14, display: 'grid', placeItems: 'center', position: 'relative' }}>
+      <main className="basketball-shell">
+        <section className="basketball-preview">
           <span style={{ position: 'absolute', top: 10, left: 14, color: 'var(--muted)', fontSize: 10, fontWeight: 900, letterSpacing: '.16em' }}>LIVE PREVIEW</span>
-          <div style={{ display: 'flex', height: 64, borderRadius: 5, overflow: 'hidden', boxShadow: '0 12px 30px rgba(0,0,0,.55)', fontFamily: 'Inter, sans-serif' }}>
+          <div className="basketball-preview-board">
             {(['away', 'home'] as const).map(team => (
               <div key={team} style={{ display: 'flex', alignItems: 'center', background: state[`${team}Color`], color: 'white', minWidth: 132, padding: '0 10px', gap: 10 }}>
                 <span style={{ fontWeight: 900, fontSize: 16 }}>{state[`${team}Abbr`]}</span>
                 <span style={{ marginLeft: 'auto', fontWeight: 900, fontSize: 35, lineHeight: 1 }}>{state[`${team}Score`]}</span>
               </div>
             ))}
-            <div style={{ width: 118, background: '#F7F7F5', color: '#070A10', display: 'grid', gridTemplateRows: '1fr 1fr' }}>
-              <div style={{ display: 'grid', placeItems: 'center', fontWeight: 900, fontSize: 20 }}>{formatClock(state.clock)}</div>
+            <div style={{ width: 136, background: '#F7F7F5', color: '#070A10', display: 'grid', gridTemplateRows: '1fr 1fr' }}>
+              <div style={{ display: 'grid', placeItems: 'center', fontWeight: 900, fontSize: 18 }}>{formatClockMs(getDisplayClockMs())}</div>
               <div style={{ display: 'grid', placeItems: 'center', borderTop: '1px solid #D7D7D2', fontWeight: 900, fontSize: 12, letterSpacing: '.12em' }}>{state.period > 4 ? `OT${state.period - 4}` : `Q${state.period}`}</div>
             </div>
           </div>
         </section>
 
-        <section style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+        <section className="basketball-actions">
           <Btn color="blue" onClick={initiateGame} disabled={state.gameInitiated}>{state.gameInitiated ? 'GAME LIVE' : 'INITIATE GAME'}</Btn>
           <Btn color="green" onClick={showOverlay} disabled={!state.gameInitiated}>SHOW OVERLAY</Btn>
           <Btn color="muted" onClick={hideOverlay} disabled={!state.gameInitiated}>HIDE OVERLAY</Btn>
         </section>
 
-        <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <section className="basketball-two-col">
           {(['away', 'home'] as const).map(team => (
             <Card key={team} title={`${team.toUpperCase()} TEAM`}>
               <Field label="Team name">
@@ -385,10 +432,10 @@ export default function BasketballControlPage() {
           ))}
         </section>
 
-        <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <section className="basketball-two-col">
           <Card title="GAME CLOCK">
-            <div style={{ height: 76, display: 'grid', placeItems: 'center', background: '#F7F7F5', color: '#070A10', borderRadius: 7, font: '900 42px Inter', marginBottom: 10 }}>
-              {formatClock(state.clock)}
+            <div className="basketball-clock-display" style={{ height: 76, display: 'grid', placeItems: 'center', background: '#F7F7F5', color: '#070A10', borderRadius: 7, font: '900 42px Inter', marginBottom: 10 }}>
+              {formatClockMs(getDisplayClockMs())}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 10 }}>
               <Btn color="green" onClick={clockStart} disabled={state.clockRunning}>START</Btn>
@@ -453,7 +500,7 @@ export default function BasketballControlPage() {
         </section>
       </main>
 
-      <div style={{
+      <div className="basketball-toast" style={{
         position: 'fixed',
         right: 20,
         bottom: 22,
@@ -472,7 +519,7 @@ export default function BasketballControlPage() {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--line)', borderRadius: 8, padding: '16px 18px' }}>
+    <div className="basketball-card" style={{ background: 'var(--card)', border: '1px solid var(--line)', borderRadius: 8, padding: '16px 18px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, color: 'var(--muted)', font: '900 12px Inter', letterSpacing: '.12em', marginBottom: 13 }}>
         <span style={{ width: 4, height: 15, borderRadius: 1, background: 'linear-gradient(var(--nba-blue),var(--nba-red))' }} />
         {title}
@@ -508,9 +555,11 @@ function Btn({ children, onClick, color, disabled }: { children: React.ReactNode
       color: disabled ? 'var(--muted)' : fg,
       cursor: disabled ? 'not-allowed' : 'pointer',
       padding: '10px 12px',
+      minHeight: 44,
       font: '900 12px Inter',
       letterSpacing: '.08em',
       opacity: disabled ? .55 : 1,
+      touchAction: 'manipulation',
     }}>{children}</button>
   )
 }
@@ -518,7 +567,7 @@ function Btn({ children, onClick, color, disabled }: { children: React.ReactNode
 function ScoreBtn({ label, onClick, hot }: { label: string; onClick: () => void; hot?: boolean }) {
   return (
     <button onClick={onClick} style={{
-      height: 46,
+      height: 48,
       border: 'none',
       borderRadius: 6,
       background: hot ? 'var(--nba-red)' : '#283141',
